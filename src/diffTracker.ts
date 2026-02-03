@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
 import * as Diff from 'diff';
+import * as path from 'path';
+import * as fs from 'fs';
+import ignore, { Ignore } from 'ignore';
 
 export interface FileDiff {
     filePath: string;
@@ -39,6 +42,12 @@ export class DiffTracker {
     private lineChanges = new Map<string, LineChange[]>();
     private inlineViews = new Map<string, InlineDiffView>();
     private disposables: vscode.Disposable[] = [];
+    private fileWatchers: vscode.FileSystemWatcher[] = [];
+    private ignoreMatchers = new Map<string, Ignore>();
+    private externalWatcherEnabled = false;
+    private watcherFallbackActive = false;
+    private snapshotInitialized = false;
+    private pendingExternalChanges = new Set<string>();
     private readonly _onDidChangeRecordingState = new vscode.EventEmitter<boolean>();
     private readonly _onDidTrackChanges = new vscode.EventEmitter<void>();
 
@@ -49,6 +58,21 @@ export class DiffTracker {
         this.disposables.push(
             vscode.workspace.onDidChangeTextDocument(this.onDocumentChanged, this)
         );
+
+        this.disposables.push(
+            vscode.workspace.onDidChangeConfiguration(e => {
+                if (
+                    e.affectsConfiguration('diffTracker.watchExclude') ||
+                    e.affectsConfiguration('files.watcherExclude') ||
+                    e.affectsConfiguration('search.exclude') ||
+                    e.affectsConfiguration('files.exclude')
+                ) {
+                    if (this.isRecording && this.externalWatcherEnabled) {
+                        this.refreshIgnoreMatchers().catch(() => undefined);
+                    }
+                }
+            })
+        );
     }
 
     public startRecording() {
@@ -57,6 +81,8 @@ export class DiffTracker {
         this.trackedChanges.clear();
         this.lineChanges.clear();
         this.inlineViews.clear();
+        this.pendingExternalChanges.clear();
+        this.snapshotInitialized = false;
 
         vscode.workspace.textDocuments.forEach(doc => {
             if (doc.uri.scheme === 'file') {
@@ -64,11 +90,15 @@ export class DiffTracker {
             }
         });
 
+        this.startExternalWatchers();
+        this.initializeWorkspaceSnapshots();
+
         this._onDidChangeRecordingState.fire(true);
     }
 
     public stopRecording() {
         this.isRecording = false;
+        this.disposeFileWatchers();
         this._onDidChangeRecordingState.fire(false);
     }
 
@@ -76,6 +106,492 @@ export class DiffTracker {
         this.trackedChanges.clear();
         this.lineChanges.clear();
         this.inlineViews.clear();
+        this._onDidTrackChanges.fire();
+    }
+
+    private async startExternalWatchers(): Promise<void> {
+        this.disposeFileWatchers();
+        this.externalWatcherEnabled = false;
+        this.watcherFallbackActive = false;
+
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) {
+            return;
+        }
+
+        try {
+            await this.refreshIgnoreMatchers();
+        } catch (error) {
+            console.warn('Failed to build ignore rules for file watcher', error);
+        }
+
+        try {
+            for (const folder of folders) {
+                const pattern = new vscode.RelativePattern(folder, '**/*');
+                const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+
+                watcher.onDidChange(uri => this.onExternalFileChanged(uri));
+                watcher.onDidCreate(uri => this.onExternalFileCreated(uri));
+                watcher.onDidDelete(uri => this.onExternalFileDeleted(uri));
+
+                this.fileWatchers.push(watcher);
+                this.disposables.push(watcher);
+            }
+
+            this.externalWatcherEnabled = true;
+        } catch (error: any) {
+            this.externalWatcherEnabled = false;
+            this.disposeFileWatchers();
+            this.watcherFallbackActive = true;
+
+            const message = error?.code === 'ENOSPC'
+                ? 'Diff Tracker: File watcher limit reached (ENOSPC). Falling back to open files only.'
+                : 'Diff Tracker: File watcher failed. Falling back to open files only.';
+            vscode.window.showWarningMessage(message);
+        }
+    }
+
+    private disposeFileWatchers() {
+        this.fileWatchers.forEach(w => w.dispose());
+        this.fileWatchers = [];
+    }
+
+    private async refreshIgnoreMatchers(): Promise<void> {
+        this.ignoreMatchers.clear();
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders) {
+            return;
+        }
+
+        for (const folder of folders) {
+            const matcher = await this.buildIgnoreMatcher(folder);
+            this.ignoreMatchers.set(folder.uri.fsPath, matcher);
+        }
+
+        this.pruneIgnoredTrackedChanges();
+    }
+
+    private getDefaultExcludePatterns(): string[] {
+        return [
+            '**/.git/**',
+            '**/node_modules/**',
+            '**/out/**',
+            '**/dist/**',
+            '**/build/**',
+            '**/coverage/**'
+        ];
+    }
+
+    private getVsCodeExcludePatterns(): string[] {
+        const config = vscode.workspace.getConfiguration();
+        const watcherExclude = config.get<Record<string, boolean>>('files.watcherExclude', {});
+        const searchExclude = config.get<Record<string, boolean>>('search.exclude', {});
+        const filesExclude = config.get<Record<string, boolean>>('files.exclude', {});
+        const patterns = new Set<string>();
+
+        const addPatterns = (obj: Record<string, boolean>) => {
+            Object.entries(obj).forEach(([pattern, enabled]) => {
+                if (enabled) {
+                    patterns.add(pattern);
+                }
+            });
+        };
+
+        addPatterns(watcherExclude);
+        addPatterns(searchExclude);
+        addPatterns(filesExclude);
+
+        return Array.from(patterns);
+    }
+
+    private getWatchExcludePatterns(): string[] {
+        const config = vscode.workspace.getConfiguration('diffTracker');
+        return config.get<string[]>('watchExclude', []) ?? [];
+    }
+
+    private async buildIgnoreMatcher(folder: vscode.WorkspaceFolder): Promise<Ignore> {
+        const ig = ignore();
+        const basePatterns = [
+            ...this.getDefaultExcludePatterns(),
+            ...this.getVsCodeExcludePatterns(),
+            ...this.getWatchExcludePatterns()
+        ];
+        ig.add(basePatterns);
+
+        const gitignoreFiles = await vscode.workspace.findFiles(
+            new vscode.RelativePattern(folder, '**/.gitignore'),
+            new vscode.RelativePattern(folder, '**/.git/**')
+        );
+
+        for (const uri of gitignoreFiles) {
+            try {
+                const content = await vscode.workspace.fs.readFile(uri);
+                const text = new TextDecoder('utf-8').decode(content);
+                const relPath = this.toPosixPath(path.relative(folder.uri.fsPath, uri.fsPath));
+                const relDir = path.posix.dirname(relPath);
+                const prefix = relDir === '.' ? '' : `${relDir}/`;
+                this.addGitignorePatterns(ig, text, prefix);
+            } catch {
+                // ignore read errors
+            }
+        }
+
+        const infoExcludePath = path.join(folder.uri.fsPath, '.git', 'info', 'exclude');
+        if (fs.existsSync(infoExcludePath)) {
+            try {
+                const text = fs.readFileSync(infoExcludePath, 'utf8');
+                this.addGitignorePatterns(ig, text, '');
+            } catch {
+                // ignore read errors
+            }
+        }
+
+        return ig;
+    }
+
+    private addGitignorePatterns(ig: Ignore, content: string, prefix: string) {
+        const lines = content.split(/\r?\n/);
+        lines.forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed || trimmed.startsWith('#')) {
+                return;
+            }
+            if (trimmed.startsWith('!')) {
+                ig.add(`!${prefix}${trimmed.slice(1)}`);
+            } else {
+                ig.add(`${prefix}${trimmed}`);
+            }
+        });
+    }
+
+    private toPosixPath(value: string): string {
+        return value.split(path.sep).join(path.posix.sep);
+    }
+
+    public testIgnorePath(inputPath?: string): { ignored: boolean; reason: string } {
+        console.log('[DiffTracker] testIgnorePath input', inputPath);
+        if (!inputPath || inputPath.trim().length === 0) {
+            return { ignored: false, reason: 'No path provided' };
+        }
+
+        const normalizedInput = inputPath.trim();
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) {
+            return { ignored: false, reason: 'No workspace folders' };
+        }
+
+        let targetFolder: vscode.WorkspaceFolder | undefined;
+        let relPath = normalizedInput;
+
+        if (path.isAbsolute(normalizedInput)) {
+            const uri = vscode.Uri.file(normalizedInput);
+            targetFolder = vscode.workspace.getWorkspaceFolder(uri);
+            if (!targetFolder) {
+                return { ignored: false, reason: 'Path is outside workspace' };
+            }
+            relPath = this.toPosixPath(path.relative(targetFolder.uri.fsPath, normalizedInput));
+        } else {
+            targetFolder = folders[0];
+            relPath = this.toPosixPath(relPath);
+        }
+
+        let matcher = this.ignoreMatchers.get(targetFolder.uri.fsPath);
+        if (!matcher) {
+            try {
+                matcher = this.buildIgnoreMatcherSync(targetFolder);
+                this.ignoreMatchers.set(targetFolder.uri.fsPath, matcher);
+            } catch {
+                return { ignored: false, reason: 'Ignore rules not initialized yet' };
+            }
+        }
+
+        const ignored = matcher.ignores(relPath);
+        const result = { ignored, reason: ignored ? 'Matched ignore rules' : 'Not ignored' };
+        console.log('[DiffTracker] testIgnorePath result', result, 'relPath', relPath);
+        return result;
+    }
+
+    private buildIgnoreMatcherSync(folder: vscode.WorkspaceFolder): Ignore {
+        const ig = ignore();
+        const basePatterns = [
+            ...this.getDefaultExcludePatterns(),
+            ...this.getVsCodeExcludePatterns(),
+            ...this.getWatchExcludePatterns()
+        ];
+        ig.add(basePatterns);
+
+        const gitignoreFiles = this.findGitignoreFilesSync(folder.uri.fsPath);
+        for (const filePath of gitignoreFiles) {
+            try {
+                const text = fs.readFileSync(filePath, 'utf8');
+                const relPath = this.toPosixPath(path.relative(folder.uri.fsPath, filePath));
+                const relDir = path.posix.dirname(relPath);
+                const prefix = relDir === '.' ? '' : `${relDir}/`;
+                this.addGitignorePatterns(ig, text, prefix);
+            } catch {
+                // ignore
+            }
+        }
+
+        const infoExcludePath = path.join(folder.uri.fsPath, '.git', 'info', 'exclude');
+        if (fs.existsSync(infoExcludePath)) {
+            try {
+                const text = fs.readFileSync(infoExcludePath, 'utf8');
+                this.addGitignorePatterns(ig, text, '');
+            } catch {
+                // ignore
+            }
+        }
+
+        return ig;
+    }
+
+    private findGitignoreFilesSync(rootPath: string): string[] {
+        const results: string[] = [];
+        const stack: string[] = [rootPath];
+        const ignoreDirs = new Set(['.git', 'node_modules', 'out', 'dist', 'build', 'coverage']);
+
+        while (stack.length > 0) {
+            const current = stack.pop();
+            if (!current) continue;
+
+            let entries: fs.Dirent[];
+            try {
+                entries = fs.readdirSync(current, { withFileTypes: true });
+            } catch {
+                continue;
+            }
+
+            for (const entry of entries) {
+                const fullPath = path.join(current, entry.name);
+                if (entry.isDirectory()) {
+                    if (ignoreDirs.has(entry.name)) {
+                        continue;
+                    }
+                    stack.push(fullPath);
+                    continue;
+                }
+                if (entry.isFile() && entry.name === '.gitignore') {
+                    results.push(fullPath);
+                }
+            }
+        }
+
+        return results;
+    }
+
+    private isPathIgnored(uri: vscode.Uri): boolean {
+        const folder = vscode.workspace.getWorkspaceFolder(uri);
+        if (!folder) {
+            return true;
+        }
+
+        const matcher = this.ignoreMatchers.get(folder.uri.fsPath);
+        if (!matcher) {
+            return false;
+        }
+
+        const relPath = this.toPosixPath(path.relative(folder.uri.fsPath, uri.fsPath));
+        return matcher.ignores(relPath);
+    }
+
+    private pruneIgnoredTrackedChanges(): void {
+        let changed = false;
+
+        for (const filePath of this.trackedChanges.keys()) {
+            const uri = vscode.Uri.file(filePath);
+            if (this.isPathIgnored(uri)) {
+                this.trackedChanges.delete(filePath);
+                this.lineChanges.delete(filePath);
+                this.inlineViews.delete(filePath);
+                changed = true;
+            }
+        }
+
+        if (changed) {
+            this._onDidTrackChanges.fire();
+        }
+    }
+
+    private async initializeWorkspaceSnapshots(): Promise<void> {
+        const folders = vscode.workspace.workspaceFolders;
+        if (!folders || folders.length === 0) {
+            this.snapshotInitialized = true;
+            return;
+        }
+
+        await this.refreshIgnoreMatchers();
+
+        for (const folder of folders) {
+            if (!this.isRecording) {
+                return;
+            }
+
+            const files = await vscode.workspace.findFiles(
+                new vscode.RelativePattern(folder, '**/*'),
+                new vscode.RelativePattern(folder, '**/{node_modules,.git,out,dist,build,coverage}/**')
+            );
+
+            for (const uri of files) {
+                if (!this.isRecording) {
+                    return;
+                }
+
+                if (this.isPathIgnored(uri)) {
+                    continue;
+                }
+
+                if (this.fileSnapshots.has(uri.fsPath)) {
+                    continue;
+                }
+
+                try {
+                    const content = await vscode.workspace.fs.readFile(uri);
+                    const text = new TextDecoder('utf-8').decode(content);
+                    this.fileSnapshots.set(uri.fsPath, text);
+                } catch {
+                    // Ignore unreadable files
+                }
+            }
+        }
+
+        this.snapshotInitialized = true;
+        this.processPendingExternalChanges();
+    }
+
+    private async processPendingExternalChanges(): Promise<void> {
+        if (this.pendingExternalChanges.size === 0) {
+            return;
+        }
+
+        const pending = Array.from(this.pendingExternalChanges);
+        this.pendingExternalChanges.clear();
+
+        for (const filePath of pending) {
+            if (!this.isRecording) {
+                return;
+            }
+
+            const uri = vscode.Uri.file(filePath);
+            if (this.isPathIgnored(uri)) {
+                continue;
+            }
+
+            await this.readFileAndUpdate(filePath, uri);
+        }
+    }
+
+    private async onExternalFileChanged(uri: vscode.Uri): Promise<void> {
+        if (!this.isRecording || !this.externalWatcherEnabled) {
+            return;
+        }
+
+        if (uri.scheme !== 'file') {
+            return;
+        }
+
+        if (this.isPathIgnored(uri)) {
+            return;
+        }
+
+        const filePath = uri.fsPath;
+
+        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
+        if (doc && doc.isDirty) {
+            return;
+        }
+
+        if (!this.fileSnapshots.has(filePath) && !this.snapshotInitialized) {
+            this.pendingExternalChanges.add(filePath);
+            return;
+        }
+
+        await this.readFileAndUpdate(filePath, uri);
+    }
+
+    private async onExternalFileCreated(uri: vscode.Uri): Promise<void> {
+        if (!this.isRecording || !this.externalWatcherEnabled) {
+            return;
+        }
+
+        if (uri.scheme !== 'file') {
+            return;
+        }
+
+        if (this.isPathIgnored(uri)) {
+            return;
+        }
+
+        const filePath = uri.fsPath;
+        if (!this.fileSnapshots.has(filePath)) {
+            this.fileSnapshots.set(filePath, '');
+        }
+
+        await this.readFileAndUpdate(filePath, uri);
+    }
+
+    private async onExternalFileDeleted(uri: vscode.Uri): Promise<void> {
+        if (!this.isRecording || !this.externalWatcherEnabled) {
+            return;
+        }
+
+        if (uri.scheme !== 'file') {
+            return;
+        }
+
+        if (this.isPathIgnored(uri)) {
+            return;
+        }
+
+        const filePath = uri.fsPath;
+        const originalContent = this.fileSnapshots.get(filePath);
+        if (originalContent === undefined) {
+            return;
+        }
+
+        this.updateTrackedDiff(filePath, '');
+    }
+
+    private async readFileAndUpdate(filePath: string, uri: vscode.Uri): Promise<void> {
+        try {
+            const content = await vscode.workspace.fs.readFile(uri);
+            const text = new TextDecoder('utf-8').decode(content);
+            this.updateTrackedDiff(filePath, text);
+        } catch {
+            // If the file no longer exists, treat as deleted
+            this.updateTrackedDiff(filePath, '');
+        }
+    }
+
+    private updateTrackedDiff(filePath: string, currentContent: string): void {
+        let originalContent = this.fileSnapshots.get(filePath);
+        if (originalContent === undefined) {
+            // Fallback baseline for unknown files
+            this.fileSnapshots.set(filePath, currentContent);
+            return;
+        }
+
+        if (originalContent === currentContent) {
+            this.trackedChanges.delete(filePath);
+            this.lineChanges.delete(filePath);
+            this.inlineViews.delete(filePath);
+            this._onDidTrackChanges.fire();
+            return;
+        }
+
+        const changes = Diff.diffLines(originalContent, currentContent);
+        const fileName = filePath.split('/').pop() || filePath;
+
+        this.trackedChanges.set(filePath, {
+            filePath,
+            fileName,
+            originalContent,
+            currentContent,
+            changes,
+            timestamp: new Date()
+        });
+
+        this.calculateLineChanges(filePath);
         this._onDidTrackChanges.fire();
     }
 
@@ -464,6 +980,10 @@ export class DiffTracker {
         }
 
         const filePath = doc.uri.fsPath;
+        const uri = doc.uri;
+        if (this.isPathIgnored(uri)) {
+            return;
+        }
 
         // For files without snapshot (not open when recording started),
         // capture the document's current content BEFORE this change as the baseline.
@@ -477,7 +997,6 @@ export class DiffTracker {
             // This works because VS Code's document might have unsaved changes,
             // but we want the state before ANY changes in this recording session.
             try {
-                const fs = require('fs');
                 const originalContent = fs.readFileSync(filePath, 'utf8');
                 this.fileSnapshots.set(filePath, originalContent);
             } catch (error) {

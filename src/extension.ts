@@ -9,6 +9,7 @@ import { InlineContentProvider } from './inlineContentProvider';
 import { DiffCodeLensProvider } from './codeLensProvider';
 import { SettingsTreeDataProvider } from './settingsTreeView';
 import { WebviewDiffPanel } from './webviewDiffPanel';
+import { WatchExcludePanel } from './watchExcludePanel';
 
 let diffTracker: DiffTracker;
 let decorationManager: DecorationManager;
@@ -356,6 +357,12 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             WebviewDiffPanel.createOrShow(context.extensionUri, diffTracker, editor.document.uri.fsPath);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('diffTracker.editWatchExcludes', () => {
+            WatchExcludePanel.createOrShow(context.extensionUri, diffTracker);
         })
     );
 

@@ -74,6 +74,14 @@
           "type": "boolean",
           "default": true,
           "description": "Highlight word-level changes within modified lines"
+        },
+        "diffTracker.watchExclude": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional ignore patterns for file watching (one pattern per entry, gitignore-style)"
         }
       }
     },
@@ -187,6 +195,11 @@
         "title": "Show Webview Diff (Active)",
         "category": "Diff Tracker",
         "icon": "$(preview)"
+      },
+      {
+        "command": "diffTracker.editWatchExcludes",
+        "title": "Edit Watch Ignores",
+        "category": "Diff Tracker"
       }
     ],
     "menus": {
@@ -216,6 +229,11 @@
         {
           "command": "diffTracker.clearDiffs",
           "when": "view == diffTracker.changesView",
+          "group": "navigation"
+        },
+        {
+          "command": "diffTracker.editWatchExcludes",
+          "when": "view == diffTracker.settingsView",
           "group": "navigation"
         }
       ],
@@ -260,6 +278,7 @@
   },
   "dependencies": {
     "@pierre/diffs": "^1.0.10",
-    "diff": "^5.2.2"
+    "diff": "^5.2.2",
+    "ignore": "^5.3.2"
   }
 }
