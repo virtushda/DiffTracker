@@ -47,6 +47,8 @@ export class DiffTracker {
     private externalWatcherEnabled = false;
     private snapshotInitialized = false;
     private pendingExternalChanges = new Set<string>();
+    private externalChangeTimers = new Map<string, NodeJS.Timeout>();
+    private documentChangeTimers = new Map<string, NodeJS.Timeout>();
     private readonly _onDidChangeRecordingState = new vscode.EventEmitter<boolean>();
     private readonly _onDidTrackChanges = new vscode.EventEmitter<void>();
 
@@ -97,6 +99,8 @@ export class DiffTracker {
 
     public stopRecording() {
         this.isRecording = false;
+        this.clearExternalChangeTimers();
+        this.clearDocumentChangeTimers();
         this.disposeFileWatchers();
         this._onDidChangeRecordingState.fire(false);
     }
@@ -150,6 +154,16 @@ export class DiffTracker {
     private disposeFileWatchers() {
         this.fileWatchers.forEach(w => w.dispose());
         this.fileWatchers = [];
+    }
+
+    private clearExternalChangeTimers(): void {
+        this.externalChangeTimers.forEach(timer => clearTimeout(timer));
+        this.externalChangeTimers.clear();
+    }
+
+    private clearDocumentChangeTimers(): void {
+        this.documentChangeTimers.forEach(timer => clearTimeout(timer));
+        this.documentChangeTimers.clear();
     }
 
     private async refreshIgnoreMatchers(): Promise<void> {
@@ -292,86 +306,12 @@ export class DiffTracker {
 
         let matcher = this.ignoreMatchers.get(targetFolder.uri.fsPath);
         if (!matcher) {
-            try {
-                matcher = this.buildIgnoreMatcherSync(targetFolder);
-                this.ignoreMatchers.set(targetFolder.uri.fsPath, matcher);
-            } catch {
-                return { ignored: false, reason: 'Ignore rules not initialized yet' };
-            }
+            return { ignored: false, reason: 'Ignore rules not initialized yet' };
         }
 
         const ignored = matcher.ignores(relPath);
         const result = { ignored, reason: ignored ? 'Matched ignore rules' : 'Not ignored' };
         return result;
-    }
-
-    private buildIgnoreMatcherSync(folder: vscode.WorkspaceFolder): Ignore {
-        const ig = ignore();
-        const basePatterns = [
-            ...this.getDefaultExcludePatterns(),
-            ...this.getVsCodeExcludePatterns(),
-            ...this.getWatchExcludePatterns()
-        ];
-        ig.add(basePatterns);
-
-        const gitignoreFiles = this.findGitignoreFilesSync(folder.uri.fsPath);
-        for (const filePath of gitignoreFiles) {
-            try {
-                const text = fs.readFileSync(filePath, 'utf8');
-                const relPath = this.toPosixPath(path.relative(folder.uri.fsPath, filePath));
-                const relDir = path.posix.dirname(relPath);
-                const prefix = relDir === '.' ? '' : `${relDir}/`;
-                this.addGitignorePatterns(ig, text, prefix);
-            } catch {
-                // ignore
-            }
-        }
-
-        const infoExcludePath = path.join(folder.uri.fsPath, '.git', 'info', 'exclude');
-        if (fs.existsSync(infoExcludePath)) {
-            try {
-                const text = fs.readFileSync(infoExcludePath, 'utf8');
-                this.addGitignorePatterns(ig, text, '');
-            } catch {
-                // ignore
-            }
-        }
-
-        return ig;
-    }
-
-    private findGitignoreFilesSync(rootPath: string): string[] {
-        const results: string[] = [];
-        const stack: string[] = [rootPath];
-        const ignoreDirs = new Set(['.git', 'node_modules', 'out', 'dist', 'build', 'coverage']);
-
-        while (stack.length > 0) {
-            const current = stack.pop();
-            if (!current) continue;
-
-            let entries: fs.Dirent[];
-            try {
-                entries = fs.readdirSync(current, { withFileTypes: true });
-            } catch {
-                continue;
-            }
-
-            for (const entry of entries) {
-                const fullPath = path.join(current, entry.name);
-                if (entry.isDirectory()) {
-                    if (ignoreDirs.has(entry.name)) {
-                        continue;
-                    }
-                    stack.push(fullPath);
-                    continue;
-                }
-                if (entry.isFile() && entry.name === '.gitignore') {
-                    results.push(fullPath);
-                }
-            }
-        }
-
-        return results;
     }
 
     private isPathIgnored(uri: vscode.Uri): boolean {
@@ -500,7 +440,23 @@ export class DiffTracker {
             return;
         }
 
-        await this.readFileAndUpdate(filePath, uri);
+        const existingTimer = this.externalChangeTimers.get(filePath);
+        if (existingTimer) {
+            clearTimeout(existingTimer);
+        }
+
+        const timer = setTimeout(() => {
+            this.externalChangeTimers.delete(filePath);
+            if (!this.isRecording || !this.externalWatcherEnabled) {
+                return;
+            }
+            if (this.isPathIgnored(uri)) {
+                return;
+            }
+            this.readFileAndUpdate(filePath, uri).catch(() => undefined);
+        }, 120);
+
+        this.externalChangeTimers.set(filePath, timer);
     }
 
     private async onExternalFileCreated(uri: vscode.Uri): Promise<void> {
@@ -981,15 +937,9 @@ export class DiffTracker {
 
         // For files without snapshot (not open when recording started),
         // capture the document's current content BEFORE this change as the baseline.
-        // We use the document state just before this edit event.
-        // Note: event.contentChanges contains what changed, so we need to
-        // reconstruct the pre-change content or use a different approach.
-        // 
-        // The safest approach: read the file from disk to get the original content.
+        // We do this immediately (before debounce) to avoid autosave overwriting
+        // the on-disk content and erasing the true baseline.
         if (!this.fileSnapshots.has(filePath)) {
-            // Try to read the original content from disk
-            // This works because VS Code's document might have unsaved changes,
-            // but we want the state before ANY changes in this recording session.
             try {
                 const originalContent = fs.readFileSync(filePath, 'utf8');
                 this.fileSnapshots.set(filePath, originalContent);
@@ -997,6 +947,37 @@ export class DiffTracker {
                 // File doesn't exist on disk (truly new file), use empty
                 this.fileSnapshots.set(filePath, '');
             }
+        }
+
+        const existingTimer = this.documentChangeTimers.get(filePath);
+        if (existingTimer) {
+            clearTimeout(existingTimer);
+        }
+
+        const timer = setTimeout(() => {
+            this.documentChangeTimers.delete(filePath);
+            if (!this.isRecording) {
+                return;
+            }
+            this.processDocumentChange(doc);
+        }, 120);
+
+        this.documentChangeTimers.set(filePath, timer);
+    }
+
+    private processDocumentChange(doc: vscode.TextDocument): void {
+        if (!this.isRecording) {
+            return;
+        }
+
+        if (doc.uri.scheme !== 'file') {
+            return;
+        }
+
+        const filePath = doc.uri.fsPath;
+        const uri = doc.uri;
+        if (this.isPathIgnored(uri)) {
+            return;
         }
 
         const originalContent = this.fileSnapshots.get(filePath)!;
