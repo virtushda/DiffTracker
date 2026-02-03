@@ -8,6 +8,7 @@ import { OriginalContentProvider } from './originalContentProvider';
 import { InlineContentProvider } from './inlineContentProvider';
 import { DiffCodeLensProvider } from './codeLensProvider';
 import { SettingsTreeDataProvider } from './settingsTreeView';
+import { WebviewDiffPanel } from './webviewDiffPanel';
 
 let diffTracker: DiffTracker;
 let decorationManager: DecorationManager;
@@ -329,6 +330,32 @@ export function activate(context: vscode.ExtensionContext) {
             }
 
             await vscode.commands.executeCommand('diffTracker.showInlineDiff', editor.document.uri.fsPath);
+        })
+    );
+
+    // Webview-based diff commands
+    context.subscriptions.push(
+        vscode.commands.registerCommand('diffTracker.showWebviewDiff', async (filePathOrItem: string | any) => {
+            const filePath = typeof filePathOrItem === 'string'
+                ? filePathOrItem
+                : filePathOrItem?.filePath;
+
+            if (!filePath) {
+                return;
+            }
+
+            WebviewDiffPanel.createOrShow(context.extensionUri, diffTracker, filePath);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('diffTracker.showWebviewDiffActive', async () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor || editor.document.uri.scheme !== 'file') {
+                return;
+            }
+
+            WebviewDiffPanel.createOrShow(context.extensionUri, diffTracker, editor.document.uri.fsPath);
         })
     );
 

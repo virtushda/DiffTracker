@@ -571,7 +571,31 @@ export class DiffTracker {
     ): { lineChanges: LineChange[]; inlineView: InlineDiffView } {
         const originalNormalized = originalLines.map(line => this.normalizeLineForMatch(line));
         const currentNormalized = currentLines.map(line => this.normalizeLineForMatch(line));
-        const arrayDiff = this.patienceDiff(originalLines, currentLines);
+
+        // Use the mature diff library instead of our custom patienceDiff
+        const originalText = originalLines.join('\n');
+        const currentText = currentLines.join('\n');
+        const diffResult = Diff.diffLines(originalText, currentText);
+
+        // Convert diff library format to our arrayDiff format
+        // diff library: { count, value: string, added?, removed? }
+        // Our format: { value: string[], added?, removed? }
+        const arrayDiff: Array<{ value: string[]; added?: boolean; removed?: boolean }> = [];
+        for (const change of diffResult) {
+            // Split value by newlines, handling the trailing newline
+            let lines = change.value.split('\n');
+            // Remove empty string at the end if the value ended with \n
+            if (lines.length > 0 && lines[lines.length - 1] === '') {
+                lines = lines.slice(0, -1);
+            }
+            if (lines.length > 0) {
+                arrayDiff.push({
+                    value: lines,
+                    added: change.added,
+                    removed: change.removed
+                });
+            }
+        }
 
         const lineChanges: LineChange[] = [];
         const inlineLines: string[] = [];

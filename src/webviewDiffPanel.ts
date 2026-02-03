@@ -1,0 +1,711 @@
+import * as vscode from 'vscode';
+import { DiffTracker } from './diffTracker';
+
+/**
+ * Manages a WebviewPanel for displaying diffs using @pierre/diffs library
+ */
+export class WebviewDiffPanel {
+    public static currentPanel: WebviewDiffPanel | undefined;
+    private readonly panel: vscode.WebviewPanel;
+    private readonly extensionUri: vscode.Uri;
+    private disposables: vscode.Disposable[] = [];
+    private filePath: string = '';
+    private currentStyle: 'split' | 'unified' = 'unified';
+    private currentWrap: boolean = false;
+    private currentExpandAll: boolean = false;
+    private isInitialized: boolean = false;
+
+    private constructor(
+        panel: vscode.WebviewPanel,
+        extensionUri: vscode.Uri,
+        private diffTracker: DiffTracker
+    ) {
+        this.panel = panel;
+        this.extensionUri = extensionUri;
+
+        // Listen for panel disposal
+        this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+
+        // Listen for theme changes
+        this.disposables.push(
+            vscode.window.onDidChangeActiveColorTheme(() => {
+                this.updateTheme();
+            })
+        );
+
+        // Listen for messages from webview
+        this.panel.webview.onDidReceiveMessage(
+            message => this.handleMessage(message),
+            null,
+            this.disposables
+        );
+
+        // Auto-refresh when diff changes (file edited, saved, etc.)
+        this.disposables.push(
+            this.diffTracker.onDidTrackChanges(() => {
+                if (this.filePath) {
+                    this.update(this.filePath);
+                }
+            })
+        );
+    }
+
+    public static createOrShow(
+        extensionUri: vscode.Uri,
+        diffTracker: DiffTracker,
+        filePath: string
+    ): WebviewDiffPanel {
+        const column = vscode.window.activeTextEditor
+            ? vscode.window.activeTextEditor.viewColumn
+            : undefined;
+
+        // If panel exists and showing the same file, reveal it
+        if (WebviewDiffPanel.currentPanel && WebviewDiffPanel.currentPanel.filePath === filePath) {
+            WebviewDiffPanel.currentPanel.panel.reveal(column);
+            return WebviewDiffPanel.currentPanel;
+        }
+
+        // If panel exists but for a different file, update it
+        if (WebviewDiffPanel.currentPanel) {
+            WebviewDiffPanel.currentPanel.update(filePath);
+            WebviewDiffPanel.currentPanel.panel.reveal(column);
+            return WebviewDiffPanel.currentPanel;
+        }
+
+        // Create a new panel
+        const panel = vscode.window.createWebviewPanel(
+            'diffTrackerWebview',
+            'Diff View',
+            vscode.ViewColumn.Beside,
+            {
+                enableScripts: true,
+                retainContextWhenHidden: true,
+                localResourceRoots: [
+                    vscode.Uri.joinPath(extensionUri, 'out'),
+                    vscode.Uri.joinPath(extensionUri, 'resources'),
+                    vscode.Uri.joinPath(extensionUri, 'webview')
+                ]
+            }
+        );
+
+        WebviewDiffPanel.currentPanel = new WebviewDiffPanel(panel, extensionUri, diffTracker);
+        WebviewDiffPanel.currentPanel.update(filePath);
+        return WebviewDiffPanel.currentPanel;
+    }
+
+    public update(filePath: string): void {
+        this.filePath = filePath;
+        const fileName = filePath.split('/').pop() || filePath.split('\\').pop() || 'file';
+        this.panel.title = `Diff: ${fileName}`;
+
+        if (this.isInitialized) {
+            // Send incremental update instead of regenerating HTML
+            this.sendDataUpdate();
+        } else {
+            this.panel.webview.html = this.getHtmlContent();
+            this.isInitialized = true;
+        }
+    }
+
+    private sendDataUpdate(): void {
+        const originalContent = this.diffTracker.getOriginalContent(this.filePath) || '';
+        const trackedChanges = this.diffTracker.getTrackedChanges();
+        const fileChange = trackedChanges.find(c => c.filePath === this.filePath);
+        const currentContent = fileChange?.currentContent || originalContent;
+        const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath);
+
+        this.panel.webview.postMessage({
+            command: 'updateData',
+            oldContents: originalContent,
+            newContents: currentContent,
+            changeBlocks: changeBlocks.map(b => ({
+                startLine: b.startLine,
+                endLine: b.endLine,
+                type: b.type,
+                blockIndex: b.blockIndex
+            })),
+            style: this.currentStyle,
+            wrap: this.currentWrap,
+            expandAll: this.currentExpandAll
+        });
+    }
+
+    private handleMessage(message: { command: string; filePath?: string; blockIndex?: number; lineNumber?: number; hunkIndex?: number; changeBlockIndex?: number; style?: string; wrap?: boolean; expandAll?: boolean }): void {
+        switch (message.command) {
+            case 'revertBlock':
+                if (message.filePath && message.changeBlockIndex !== undefined) {
+                    vscode.commands.executeCommand('diffTracker.revertBlock', message.filePath, message.changeBlockIndex);
+                    // Refresh the webview after action
+                    setTimeout(() => this.update(this.filePath), 100);
+                }
+                break;
+            case 'keepBlock':
+                if (message.filePath && message.changeBlockIndex !== undefined) {
+                    vscode.commands.executeCommand('diffTracker.keepBlock', message.filePath, message.changeBlockIndex);
+                    // Refresh the webview after action
+                    setTimeout(() => this.update(this.filePath), 100);
+                }
+                break;
+            case 'setStyle':
+                if (message.style === 'split' || message.style === 'unified') {
+                    this.currentStyle = message.style;
+                }
+                break;
+            case 'setWrap':
+                if (typeof message.wrap === 'boolean') {
+                    this.currentWrap = message.wrap;
+                }
+                break;
+            case 'setExpandAll':
+                if (typeof message.expandAll === 'boolean') {
+                    this.currentExpandAll = message.expandAll;
+                }
+                break;
+        }
+    }
+
+    private findBlockIndex(filePath: string, blockIndex?: number, lineNumber?: number): number | undefined {
+        // If blockIndex is directly provided, use it
+        if (blockIndex !== undefined) {
+            return blockIndex;
+        }
+
+        // Otherwise, find block by line number
+        if (lineNumber !== undefined) {
+            const blocks = this.diffTracker.getChangeBlocks(filePath);
+            for (let i = 0; i < blocks.length; i++) {
+                const block = blocks[i];
+                if (lineNumber >= block.startLine && lineNumber <= block.endLine) {
+                    return i;
+                }
+            }
+            // If not found in range, find the closest block
+            let closestIndex = 0;
+            let closestDistance = Infinity;
+            for (let i = 0; i < blocks.length; i++) {
+                const block = blocks[i];
+                const midPoint = (block.startLine + block.endLine) / 2;
+                const distance = Math.abs(lineNumber - midPoint);
+                if (distance < closestDistance) {
+                    closestDistance = distance;
+                    closestIndex = i;
+                }
+            }
+            return blocks.length > 0 ? closestIndex : undefined;
+        }
+
+        return undefined;
+    }
+
+    private updateTheme(): void {
+        const themeKind = vscode.window.activeColorTheme.kind;
+        const themeType = themeKind === vscode.ColorThemeKind.Light ? 'light' : 'dark';
+        this.panel.webview.postMessage({ command: 'setTheme', themeType });
+    }
+
+    private getHtmlContent(): string {
+        const webview = this.panel.webview;
+        const originalContent = this.diffTracker.getOriginalContent(this.filePath) || '';
+        const trackedChanges = this.diffTracker.getTrackedChanges();
+        const fileChange = trackedChanges.find(c => c.filePath === this.filePath);
+        const currentContent = fileChange?.currentContent || originalContent;
+        const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
+
+        // Get change blocks from diffTracker - this is the source of truth for block indexing
+        const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath);
+        const changeBlocksJson = JSON.stringify(changeBlocks.map(b => ({
+            startLine: b.startLine,
+            endLine: b.endLine,
+            type: b.type,
+            blockIndex: b.blockIndex
+        })));
+
+        // Detect language from file extension
+        const ext = fileName.split('.').pop()?.toLowerCase() || '';
+        const langMap: Record<string, string> = {
+            'ts': 'typescript',
+            'tsx': 'tsx',
+            'js': 'javascript',
+            'jsx': 'jsx',
+            'py': 'python',
+            'rs': 'rust',
+            'go': 'go',
+            'java': 'java',
+            'cpp': 'cpp',
+            'c': 'c',
+            'h': 'c',
+            'hpp': 'cpp',
+            'css': 'css',
+            'scss': 'scss',
+            'html': 'html',
+            'json': 'json',
+            'md': 'markdown',
+            'yaml': 'yaml',
+            'yml': 'yaml',
+            'xml': 'xml',
+            'sql': 'sql',
+            'sh': 'bash',
+            'bash': 'bash',
+            'zsh': 'bash',
+            'zig': 'zig',
+        };
+        const lang = langMap[ext] || 'plaintext';
+
+        // Determine initial theme
+        const themeKind = vscode.window.activeColorTheme.kind;
+        const initialThemeType = themeKind === vscode.ColorThemeKind.Light ? 'light' : 'dark';
+
+        // Escape content for embedding in script
+        const escapeForJs = (str: string) => {
+            return str
+                .replace(/\\/g, '\\\\')
+                .replace(/`/g, '\\`')
+                .replace(/\$/g, '\\$');
+        };
+
+        const escapedFilePath = this.filePath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const diffsBundleUri = webview.asWebviewUri(
+            vscode.Uri.joinPath(this.extensionUri, 'webview', 'diffs-bundle.js')
+        );
+        const cspSource = webview.cspSource;
+
+        return /* html */ `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' ${cspSource}; script-src 'unsafe-inline' ${cspSource}; font-src ${cspSource};">
+    <title>Diff View</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: var(--vscode-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif);
+            background-color: var(--vscode-editor-background, #1e1e1e);
+            color: var(--vscode-editor-foreground, #d4d4d4);
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        .toolbar {
+            display: flex;
+            gap: 8px;
+            padding: 8px 12px;
+            background: var(--vscode-editorGroupHeader-tabsBackground, #252526);
+            border-bottom: 1px solid var(--vscode-editorGroup-border, #444);
+            flex-shrink: 0;
+        }
+        .toolbar button {
+            padding: 4px 12px;
+            background: var(--vscode-button-background, #0e639c);
+            color: var(--vscode-button-foreground, #fff);
+            border: none;
+            border-radius: 2px;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .toolbar button:hover {
+            background: var(--vscode-button-hoverBackground, #1177bb);
+        }
+        .toolbar button.secondary {
+            background: var(--vscode-button-secondaryBackground, #3a3d41);
+            color: var(--vscode-button-secondaryForeground, #ccc);
+        }
+        .toolbar button.secondary:hover {
+            background: var(--vscode-button-secondaryHoverBackground, #45494e);
+        }
+        .toolbar .spacer {
+            flex: 1;
+        }
+        .toolbar .filename {
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--vscode-foreground, #ccc);
+            align-self: center;
+        }
+        #diff-container {
+            flex: 1;
+            overflow: auto;
+            padding: 0;
+        }
+        .loading {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--vscode-descriptionForeground, #888);
+        }
+        .no-changes {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            height: 100%;
+            color: var(--vscode-descriptionForeground, #888);
+            flex-direction: column;
+            gap: 8px;
+        }
+        .no-changes svg {
+            width: 48px;
+            height: 48px;
+            opacity: 0.5;
+        }
+        /* Floating action buttons (Cursor-style) - right side of change block */
+        .hunk-actions {
+            position: absolute;
+            right: 8px;
+            top: 0;
+            display: flex;
+            gap: 4px;
+            z-index: 10;
+        }
+        .hunk-actions button {
+            padding: 1px 6px;
+            font-size: 11px;
+            border: 1px solid rgba(255,255,255,0.3);
+            border-radius: 3px;
+            cursor: pointer;
+            font-weight: 500;
+            transition: all 0.15s;
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            line-height: 1.2;
+            height: 18px;
+        }
+        .hunk-actions .btn-revert {
+            background: transparent;
+            color: var(--vscode-descriptionForeground);
+            border-color: var(--vscode-widget-border);
+        }
+        .hunk-actions .btn-revert:hover {
+            background: var(--vscode-toolbar-hoverBackground);
+            color: var(--vscode-foreground);
+        }
+        .hunk-actions .btn-keep {
+            background: #238636;
+            color: #fff;
+            border-color: #238636;
+        }
+        .hunk-actions .btn-keep:hover {
+            background: #2ea043;
+        }
+        .hunk-actions .shortcut {
+            opacity: 0.7;
+            font-size: 9px;
+            padding-left: 2px;
+        }
+    </style>
+</head>
+<body>
+    <div class="toolbar">
+        <span class="filename">${this.escapeHtml(fileName)}</span>
+        <div class="spacer"></div>
+        <button id="btn-split" class="secondary">Split</button>
+        <button id="btn-unified" class="secondary">Unified</button>
+        <button id="btn-wrap" class="secondary">Wrap</button>
+        <button id="btn-expand" class="secondary">Expand</button>
+    </div>
+    <div id="diff-container">
+        <div class="loading">Loading diff...</div>
+    </div>
+
+    <script src="${diffsBundleUri}"></script>
+    <script>
+        const { FileDiff, parseDiffFromFile, diffAcceptRejectHunk } = window.PierreDiffs || {};
+        if (!FileDiff || !parseDiffFromFile || !diffAcceptRejectHunk) {
+            throw new Error('Failed to load local @pierre/diffs bundle.'); 
+        }
+
+        const vscode = acquireVsCodeApi();
+        const container = document.getElementById('diff-container');
+        const btnSplit = document.getElementById('btn-split');
+        const btnUnified = document.getElementById('btn-unified');
+        const btnWrap = document.getElementById('btn-wrap');
+        const btnExpand = document.getElementById('btn-expand');
+
+        const filePath = '${escapedFilePath}';
+
+        const oldFile = {
+            name: '${this.escapeHtml(fileName)}',
+            contents: \`${escapeForJs(originalContent)}\`,
+            lang: '${lang}'
+        };
+
+        const newFile = {
+            name: '${this.escapeHtml(fileName)}',
+            contents: \`${escapeForJs(currentContent)}\`,
+            lang: '${lang}'
+        };
+
+        // Change blocks from diffTracker - source of truth for indexing
+        const changeBlocks = ${changeBlocksJson};
+
+        let currentStyle = 'unified';
+        let currentWrap = false;
+        let currentExpandAll = false;
+        let fileDiffInstance = null;
+        let fileDiffMeta = null;
+
+        function clampLineNumber(lineNumber, totalLines) {
+            if (totalLines <= 0) {
+                return 1;
+            }
+            return Math.max(1, Math.min(lineNumber, totalLines));
+        }
+
+        function getAnnotationLineForBlock(block, totalLines) {
+            if (block.type !== 'deleted') {
+                return clampLineNumber(block.endLine, totalLines);
+            }
+
+            // For deleted blocks, show on the line immediately after the deletion.
+            // The current block endLine tends to be one line below the desired target,
+            // so shift up by one.
+            let targetLine = block.endLine - 1;
+
+            // If deletion is at EOF, place on the second-to-last line.
+            if (targetLine >= totalLines) {
+                targetLine = Math.max(1, totalLines - 1);
+            }
+
+            return clampLineNumber(targetLine, totalLines);
+        }
+
+        // Create annotations based on diffTracker blocks, not diffs.com ChangeContent
+        function getBlockAnnotations() {
+            const annotations = [];
+            const totalLines = newFile.contents.split('\\n').length;
+            
+            console.log('=== DIFFTRACKER BLOCKS ===');
+            console.log('Total blocks:', changeBlocks.length);
+            
+            changeBlocks.forEach((block, idx) => {
+                console.log('Block ' + idx + ':', block);
+                // Use the endLine as the annotation line
+                annotations.push({
+                    side: 'additions',
+                    lineNumber: getAnnotationLineForBlock(block, totalLines),
+                    metadata: { 
+                        blockIndex: block.blockIndex
+                    }
+                });
+            });
+            
+            console.log('Annotations:', annotations);
+            return annotations;
+        }
+
+        // Keep the old function for debugging diffs.com structure
+        function getHunkAnnotations(diffMeta) {
+            const annotations = [];
+            let changeBlockIndex = 0;
+            
+            console.log('=== DETAILED HUNK ANALYSIS ===');
+            console.log('Total hunks:', diffMeta?.hunks?.length);
+            
+            if (diffMeta && diffMeta.hunks) {
+                diffMeta.hunks.forEach((hunk, hunkIdx) => {
+                    console.log('Hunk ' + hunkIdx + ':', {
+                        additionStart: hunk.additionStart,
+                        additionCount: hunk.additionCount,
+                        deletionStart: hunk.deletionStart,
+                        deletionCount: hunk.deletionCount,
+                        hunkContentLength: hunk.hunkContent?.length
+                    });
+                    
+                    if (hunk.hunkContent) {
+                        let currentNewLine = hunk.additionStart || 1;
+                        
+                        hunk.hunkContent.forEach((content, contentIdx) => {
+                            if (content.type === 'context') {
+                                currentNewLine += content.lines.length;
+                            } else if (content.type === 'change') {
+                                const additionLines = content.additions ? content.additions.length : 0;
+                                const deletionLines = content.deletions ? content.deletions.length : 0;
+                                
+                                console.log('  Content[' + contentIdx + '] type=change:', {
+                                    additions: additionLines,
+                                    deletions: deletionLines,
+                                    changeBlockIndex: changeBlockIndex,
+                                    lineNumber: currentNewLine
+                                });
+                                
+                                // Calculate annotation line number
+                                let annotationLine;
+                                if (additionLines > 0) {
+                                    // Use last line of additions
+                                    annotationLine = currentNewLine + additionLines - 1;
+                                } else {
+                                    // Pure deletion - use line before or the start line
+                                    annotationLine = currentNewLine > 1 ? currentNewLine - 1 : 1;
+                                }
+                                
+                                // Create annotation for THIS change block
+                                annotations.push({
+                                    side: 'additions',
+                                    lineNumber: annotationLine,
+                                    metadata: { 
+                                        hunkIndex: hunkIdx,
+                                        changeBlockIndex: changeBlockIndex
+                                    }
+                                });
+                                
+                                changeBlockIndex++;
+                                currentNewLine += additionLines;
+                            }
+                        });
+                    }
+                });
+            }
+            
+            console.log('=== ANNOTATIONS RESULT ===');
+            console.log('Total change blocks:', changeBlockIndex);
+            console.log('Annotations:', annotations);
+            return annotations;
+        }
+
+        function renderDiff(style) {
+            currentStyle = style;
+            container.innerHTML = '';
+
+            if (oldFile.contents === newFile.contents) {
+                container.innerHTML = '<div class="no-changes"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg><span>No changes detected</span></div>';
+                return;
+            }
+
+            fileDiffMeta = parseDiffFromFile(oldFile, newFile);
+            
+            // Use diffTracker blocks for annotations, not diffs.com ChangeContent
+            const blockAnnotations = getBlockAnnotations();
+
+            fileDiffInstance = new FileDiff({
+                theme: { dark: 'github-dark', light: 'github-light' },
+                themeType: '${initialThemeType}',
+                diffStyle: style,
+                diffIndicators: 'bars',
+                lineDiffType: 'word-alt',
+                hunkSeparators: 'line-info',
+                overflow: currentWrap ? 'wrap' : 'scroll',
+                expandUnchanged: currentExpandAll,
+                disableFileHeader: true,
+                renderAnnotation(annotation) {
+                    const wrapper = document.createElement('div');
+                    wrapper.className = 'hunk-actions';
+                    
+                    const revertBtn = document.createElement('button');
+                    revertBtn.className = 'btn-revert';
+                    revertBtn.innerHTML = 'Undo <span class="shortcut">⌘N</span>';
+                    revertBtn.title = 'Revert this change (block ' + annotation.metadata.blockIndex + ')';
+                    revertBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        console.log('Undo clicked for blockIndex:', annotation.metadata.blockIndex);
+                        vscode.postMessage({ 
+                            command: 'revertBlock', 
+                            filePath: filePath,
+                            changeBlockIndex: annotation.metadata.blockIndex
+                        });
+                    });
+
+                    const keepBtn = document.createElement('button');
+                    keepBtn.className = 'btn-keep';
+                    keepBtn.innerHTML = 'Keep <span class="shortcut">⌘Y</span>';
+                    keepBtn.title = 'Accept this change (block ' + annotation.metadata.blockIndex + ')';
+                    keepBtn.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        console.log('Keep clicked for blockIndex:', annotation.metadata.blockIndex);
+                        vscode.postMessage({ 
+                            command: 'keepBlock', 
+                            filePath: filePath,
+                            changeBlockIndex: annotation.metadata.blockIndex
+                        });
+                    });
+
+                    wrapper.appendChild(revertBtn);
+                    wrapper.appendChild(keepBtn);
+                    return wrapper;
+                }
+            });
+
+            fileDiffInstance.render({
+                fileDiff: fileDiffMeta,
+                lineAnnotations: blockAnnotations,
+                containerWrapper: container,
+            });
+
+            btnSplit.classList.toggle('secondary', style !== 'split');
+            btnUnified.classList.toggle('secondary', style !== 'unified');
+            btnWrap.classList.toggle('secondary', !currentWrap);
+            btnExpand.classList.toggle('secondary', !currentExpandAll);
+        }
+
+        btnSplit.addEventListener('click', () => {
+            renderDiff('split');
+            vscode.postMessage({ command: 'setStyle', style: 'split' });
+        });
+        btnUnified.addEventListener('click', () => {
+            renderDiff('unified');
+            vscode.postMessage({ command: 'setStyle', style: 'unified' });
+        });
+        btnWrap.addEventListener('click', () => {
+            currentWrap = !currentWrap;
+            renderDiff(currentStyle);
+            vscode.postMessage({ command: 'setWrap', wrap: currentWrap });
+        });
+        btnExpand.addEventListener('click', () => {
+            currentExpandAll = !currentExpandAll;
+            renderDiff(currentStyle);
+            vscode.postMessage({ command: 'setExpandAll', expandAll: currentExpandAll });
+        });
+
+        // Handle messages from extension
+        window.addEventListener('message', event => {
+            const message = event.data;
+            if (message.command === 'setTheme' && fileDiffInstance) {
+                fileDiffInstance.setThemeType(message.themeType);
+            } else if (message.command === 'updateData') {
+                // Update data and re-render with current style
+                oldFile.contents = message.oldContents;
+                newFile.contents = message.newContents;
+                changeBlocks.length = 0;
+                message.changeBlocks.forEach(b => changeBlocks.push(b));
+                if (typeof message.wrap === 'boolean') {
+                    currentWrap = message.wrap;
+                }
+                if (typeof message.expandAll === 'boolean') {
+                    currentExpandAll = message.expandAll;
+                }
+                renderDiff(currentStyle);
+            }
+        });
+
+        // Initial render
+        renderDiff('unified');
+    </script>
+</body>
+</html>`;
+    }
+
+    private escapeHtml(str: string): string {
+        return str
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+    }
+
+    public dispose(): void {
+        WebviewDiffPanel.currentPanel = undefined;
+        this.panel.dispose();
+        while (this.disposables.length) {
+            const disposable = this.disposables.pop();
+            if (disposable) {
+                disposable.dispose();
+            }
+        }
+    }
+}

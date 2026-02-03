@@ -175,6 +175,18 @@
         "command": "diffTracker.keepAllBlocksInFile",
         "title": "Keep All Changes in File",
         "category": "Diff Tracker"
+      },
+      {
+        "command": "diffTracker.showWebviewDiff",
+        "title": "Show Webview Diff",
+        "category": "Diff Tracker",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "diffTracker.showWebviewDiffActive",
+        "title": "Show Webview Diff (Active)",
+        "category": "Diff Tracker",
+        "icon": "$(preview)"
       }
     ],
     "menus": {
@@ -191,6 +203,11 @@
         },
         {
           "command": "diffTracker.revertFile",
+          "when": "viewItem == changedFile",
+          "group": "inline"
+        },
+        {
+          "command": "diffTracker.showWebviewDiff",
           "when": "viewItem == changedFile",
           "group": "inline"
         }
@@ -212,13 +229,19 @@
           "command": "diffTracker.showInlineDiffActive",
           "when": "resourceScheme == file && diffTracker.isRecording",
           "group": "navigation"
+        },
+        {
+          "command": "diffTracker.showWebviewDiffActive",
+          "when": "resourceScheme == file && diffTracker.isRecording",
+          "group": "navigation"
         }
       ]
     }
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
-    "compile": "tsc -p ./",
+    "compile": "tsc -p ./ && npm run build:webview",
+    "build:webview": "node esbuild.webview.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
     "lint": "eslint src --ext ts",
@@ -231,10 +254,12 @@
     "@typescript-eslint/eslint-plugin": "^6.x",
     "@typescript-eslint/parser": "^6.x",
     "@vscode/vsce": "^2.22.0",
+    "esbuild": "^0.27.2",
     "eslint": "^8.x",
     "typescript": "^5.2.0"
   },
   "dependencies": {
-    "diff": "^5.2.0"
+    "@pierre/diffs": "^1.0.10",
+    "diff": "^5.2.2"
   }
 }
