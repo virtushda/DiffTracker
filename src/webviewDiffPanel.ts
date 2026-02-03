@@ -481,11 +481,7 @@ export class WebviewDiffPanel {
             const annotations = [];
             const totalLines = newFile.contents.split('\\n').length;
             
-            console.log('=== DIFFTRACKER BLOCKS ===');
-            console.log('Total blocks:', changeBlocks.length);
-            
-            changeBlocks.forEach((block, idx) => {
-                console.log('Block ' + idx + ':', block);
+            changeBlocks.forEach((block) => {
                 // Use the endLine as the annotation line
                 annotations.push({
                     side: 'additions',
@@ -496,7 +492,6 @@ export class WebviewDiffPanel {
                 });
             });
             
-            console.log('Annotations:', annotations);
             return annotations;
         }
 
@@ -505,19 +500,8 @@ export class WebviewDiffPanel {
             const annotations = [];
             let changeBlockIndex = 0;
             
-            console.log('=== DETAILED HUNK ANALYSIS ===');
-            console.log('Total hunks:', diffMeta?.hunks?.length);
-            
             if (diffMeta && diffMeta.hunks) {
                 diffMeta.hunks.forEach((hunk, hunkIdx) => {
-                    console.log('Hunk ' + hunkIdx + ':', {
-                        additionStart: hunk.additionStart,
-                        additionCount: hunk.additionCount,
-                        deletionStart: hunk.deletionStart,
-                        deletionCount: hunk.deletionCount,
-                        hunkContentLength: hunk.hunkContent?.length
-                    });
-                    
                     if (hunk.hunkContent) {
                         let currentNewLine = hunk.additionStart || 1;
                         
@@ -527,13 +511,6 @@ export class WebviewDiffPanel {
                             } else if (content.type === 'change') {
                                 const additionLines = content.additions ? content.additions.length : 0;
                                 const deletionLines = content.deletions ? content.deletions.length : 0;
-                                
-                                console.log('  Content[' + contentIdx + '] type=change:', {
-                                    additions: additionLines,
-                                    deletions: deletionLines,
-                                    changeBlockIndex: changeBlockIndex,
-                                    lineNumber: currentNewLine
-                                });
                                 
                                 // Calculate annotation line number
                                 let annotationLine;
@@ -563,9 +540,6 @@ export class WebviewDiffPanel {
                 });
             }
             
-            console.log('=== ANNOTATIONS RESULT ===');
-            console.log('Total change blocks:', changeBlockIndex);
-            console.log('Annotations:', annotations);
             return annotations;
         }
 
@@ -604,7 +578,6 @@ export class WebviewDiffPanel {
                     revertBtn.title = 'Revert this change (block ' + annotation.metadata.blockIndex + ')';
                     revertBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
-                        console.log('Undo clicked for blockIndex:', annotation.metadata.blockIndex);
                         vscode.postMessage({ 
                             command: 'revertBlock', 
                             filePath: filePath,
@@ -618,7 +591,6 @@ export class WebviewDiffPanel {
                     keepBtn.title = 'Accept this change (block ' + annotation.metadata.blockIndex + ')';
                     keepBtn.addEventListener('click', (e) => {
                         e.stopPropagation();
-                        console.log('Keep clicked for blockIndex:', annotation.metadata.blockIndex);
                         vscode.postMessage({ 
                             command: 'keepBlock', 
                             filePath: filePath,

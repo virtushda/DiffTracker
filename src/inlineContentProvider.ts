@@ -19,7 +19,6 @@ export class InlineContentProvider implements vscode.TextDocumentContentProvider
         // Extract the original file path (remove the (Diff) prefix if present)
         let filePath = uri.fsPath;
 
-        console.log('[InlineContentProvider] Original URI fsPath:', filePath);
 
         // Remove "(Diff) " prefix from filename if present
         const lastSlash = filePath.lastIndexOf('/');
@@ -31,10 +30,8 @@ export class InlineContentProvider implements vscode.TextDocumentContentProvider
             }
         }
 
-        console.log('[InlineContentProvider] Resolved filePath:', filePath);
 
         const content = this.diffTracker.getInlineContent(filePath);
-        console.log('[InlineContentProvider] Got content:', content ? `${content.length} chars` : 'undefined');
 
         if (content !== undefined) {
             return content;

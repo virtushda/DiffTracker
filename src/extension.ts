@@ -20,7 +20,6 @@ let codeLensProvider: DiffCodeLensProvider;
 let settingsTreeDataProvider: SettingsTreeDataProvider;
 
 export function activate(context: vscode.ExtensionContext) {
-    console.log('Diff Tracker extension is now active');
 
     // Initialize services
     diffTracker = new DiffTracker();

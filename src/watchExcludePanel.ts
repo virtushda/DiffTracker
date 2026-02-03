@@ -50,7 +50,6 @@ export class WatchExcludePanel {
 
     private async handleMessage(message: { command: string; patterns?: string[]; testPath?: string }) {
         if (message.command === 'save' && Array.isArray(message.patterns)) {
-            console.log('[WatchIgnore] save message received', message.patterns.length);
             const config = vscode.workspace.getConfiguration('diffTracker');
             await config.update('watchExclude', message.patterns, vscode.ConfigurationTarget.Global);
             vscode.window.showInformationMessage('Diff Tracker: Watch ignore rules saved');
@@ -59,14 +58,11 @@ export class WatchExcludePanel {
         }
 
         if (message.command === 'reload') {
-            console.log('[WatchIgnore] reload message received');
             await this.postCurrentPatterns();
         }
 
         if (message.command === 'testPath') {
-            console.log('[WatchIgnore] testPath message received', message.testPath);
             const result = this.diffTracker.testIgnorePath(message.testPath);
-            console.log('[WatchIgnore] test result', result);
             this.panel.webview.postMessage({
                 command: 'testResult',
                 ...result

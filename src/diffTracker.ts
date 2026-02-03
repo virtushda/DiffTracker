@@ -269,7 +269,6 @@ export class DiffTracker {
     }
 
     public testIgnorePath(inputPath?: string): { ignored: boolean; reason: string } {
-        console.log('[DiffTracker] testIgnorePath input', inputPath);
         if (!inputPath || inputPath.trim().length === 0) {
             return { ignored: false, reason: 'No path provided' };
         }
@@ -307,7 +306,6 @@ export class DiffTracker {
 
         const ignored = matcher.ignores(relPath);
         const result = { ignored, reason: ignored ? 'Matched ignore rules' : 'Not ignored' };
-        console.log('[DiffTracker] testIgnorePath result', result, 'relPath', relPath);
         return result;
     }
 
