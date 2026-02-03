@@ -331,6 +331,7 @@ export class WebviewDiffPanel {
             flex: 1;
             overflow: auto;
             padding: 0;
+            padding-bottom: 28px;
         }
         .loading {
             display: flex;
@@ -590,6 +591,7 @@ export class WebviewDiffPanel {
                 lineDiffType: 'word-alt',
                 hunkSeparators: 'line-info',
                 overflow: currentWrap ? 'wrap' : 'scroll',
+                unsafeCSS: '[data-code]{ padding-bottom: calc(1lh + var(--diffs-gap-block, 8px)) !important; } [data-annotation-content]{ overflow: visible !important; }',
                 expandUnchanged: currentExpandAll,
                 disableFileHeader: true,
                 renderAnnotation(annotation) {
