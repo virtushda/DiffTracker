@@ -51,21 +51,13 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
                 filesByDir.get(dir)!.push(change);
             });
 
-            // Create tree items
+            // Create tree items (always show directory tree)
             for (const [dir, files] of filesByDir) {
-                if (filesByDir.size === 1) {
-                    // Only one directory - show files directly
-                    files.forEach(file => {
-                        items.push(this.createFileItem(file));
-                    });
-                } else {
-                    // Multiple directories - show directory tree
-                    const dirItem = new TreeItem(path.basename(dir), vscode.TreeItemCollapsibleState.Expanded);
-                    dirItem.iconPath = new vscode.ThemeIcon('folder');
-                    dirItem.description = `${files.length} file(s)`;
-                    dirItem.children = files.map(file => this.createFileItem(file));
-                    items.push(dirItem);
-                }
+                const dirItem = new TreeItem(path.basename(dir), vscode.TreeItemCollapsibleState.Expanded);
+                dirItem.iconPath = new vscode.ThemeIcon('folder');
+                dirItem.description = `${files.length} file(s)`;
+                dirItem.children = files.map(file => this.createFileItem(file));
+                items.push(dirItem);
             }
         } else if (element.children) {
             return Promise.resolve(element.children);
