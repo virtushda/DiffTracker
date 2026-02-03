@@ -45,7 +45,6 @@ export class DiffTracker {
     private fileWatchers: vscode.FileSystemWatcher[] = [];
     private ignoreMatchers = new Map<string, Ignore>();
     private externalWatcherEnabled = false;
-    private watcherFallbackActive = false;
     private snapshotInitialized = false;
     private pendingExternalChanges = new Set<string>();
     private readonly _onDidChangeRecordingState = new vscode.EventEmitter<boolean>();
@@ -112,7 +111,6 @@ export class DiffTracker {
     private async startExternalWatchers(): Promise<void> {
         this.disposeFileWatchers();
         this.externalWatcherEnabled = false;
-        this.watcherFallbackActive = false;
 
         const folders = vscode.workspace.workspaceFolders;
         if (!folders || folders.length === 0) {
@@ -142,8 +140,6 @@ export class DiffTracker {
         } catch (error: any) {
             this.externalWatcherEnabled = false;
             this.disposeFileWatchers();
-            this.watcherFallbackActive = true;
-
             const message = error?.code === 'ENOSPC'
                 ? 'Diff Tracker: File watcher limit reached (ENOSPC). Falling back to open files only.'
                 : 'Diff Tracker: File watcher failed. Falling back to open files only.';

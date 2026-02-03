@@ -495,54 +495,6 @@ export class WebviewDiffPanel {
             return annotations;
         }
 
-        // Keep the old function for debugging diffs.com structure
-        function getHunkAnnotations(diffMeta) {
-            const annotations = [];
-            let changeBlockIndex = 0;
-            
-            if (diffMeta && diffMeta.hunks) {
-                diffMeta.hunks.forEach((hunk, hunkIdx) => {
-                    if (hunk.hunkContent) {
-                        let currentNewLine = hunk.additionStart || 1;
-                        
-                        hunk.hunkContent.forEach((content, contentIdx) => {
-                            if (content.type === 'context') {
-                                currentNewLine += content.lines.length;
-                            } else if (content.type === 'change') {
-                                const additionLines = content.additions ? content.additions.length : 0;
-                                const deletionLines = content.deletions ? content.deletions.length : 0;
-                                
-                                // Calculate annotation line number
-                                let annotationLine;
-                                if (additionLines > 0) {
-                                    // Use last line of additions
-                                    annotationLine = currentNewLine + additionLines - 1;
-                                } else {
-                                    // Pure deletion - use line before or the start line
-                                    annotationLine = currentNewLine > 1 ? currentNewLine - 1 : 1;
-                                }
-                                
-                                // Create annotation for THIS change block
-                                annotations.push({
-                                    side: 'additions',
-                                    lineNumber: annotationLine,
-                                    metadata: { 
-                                        hunkIndex: hunkIdx,
-                                        changeBlockIndex: changeBlockIndex
-                                    }
-                                });
-                                
-                                changeBlockIndex++;
-                                currentNewLine += additionLines;
-                            }
-                        });
-                    }
-                });
-            }
-            
-            return annotations;
-        }
-
         function renderDiff(style) {
             currentStyle = style;
             container.innerHTML = '';
