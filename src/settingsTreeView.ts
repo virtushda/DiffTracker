@@ -12,7 +12,7 @@ class SettingItem extends vscode.TreeItem {
         super(label, vscode.TreeItemCollapsibleState.None);
 
         // Use checkbox-style icons
-        this.iconPath = new vscode.ThemeIcon(isEnabled ? 'check' : 'circle-outline');
+        this.iconPath = new vscode.ThemeIcon(isEnabled ? 'check' : 'circle-large-outline');
         this.description = isEnabled ? 'On' : 'Off';
         this.contextValue = 'settingItem';
         this.command = {
@@ -25,18 +25,50 @@ class SettingItem extends vscode.TreeItem {
 }
 
 /**
+ * Tree item for a setting group
+ */
+class SettingGroupItem extends vscode.TreeItem {
+    constructor(
+        public readonly label: string
+    ) {
+        super(label, vscode.TreeItemCollapsibleState.Expanded);
+        this.iconPath = new vscode.ThemeIcon('settings');
+        this.contextValue = 'settingGroup';
+    }
+}
+
+type SettingGroup = {
+    id: string;
+    label: string;
+    icon?: string;
+    items: Array<{ key: string; label: string }>;
+};
+
+/**
  * Provides the settings tree view in the sidebar
  */
-export class SettingsTreeDataProvider implements vscode.TreeDataProvider<SettingItem> {
-    private _onDidChangeTreeData = new vscode.EventEmitter<SettingItem | undefined>();
+export class SettingsTreeDataProvider implements vscode.TreeDataProvider<SettingItem | SettingGroupItem> {
+    private _onDidChangeTreeData = new vscode.EventEmitter<SettingItem | SettingGroupItem | undefined>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-    private settings = [
-        { key: 'showDeletedLinesBadge', label: 'Show Deleted Lines Badge' },
-        { key: 'showCodeLens', label: 'Show CodeLens Actions' },
-        { key: 'highlightAddedLines', label: 'Highlight Added Lines' },
-        { key: 'highlightModifiedLines', label: 'Highlight Modified Lines' },
-        { key: 'highlightWordChanges', label: 'Highlight Word Changes' }
+    private settings: SettingGroup[] = [
+        {
+            id: 'display',
+            label: 'Display',
+            items: [
+                { key: 'showDeletedLinesBadge', label: 'Deleted line badge' },
+                { key: 'showCodeLens', label: 'CodeLens actions' }
+            ]
+        },
+        {
+            id: 'highlight',
+            label: 'Highlight',
+            items: [
+                { key: 'highlightAddedLines', label: 'Added lines' },
+                { key: 'highlightModifiedLines', label: 'Modified lines' },
+                { key: 'highlightWordChanges', label: 'Word changes' }
+            ]
+        }
     ];
 
     constructor() {
@@ -52,14 +84,23 @@ export class SettingsTreeDataProvider implements vscode.TreeDataProvider<Setting
         this._onDidChangeTreeData.fire(undefined);
     }
 
-    getTreeItem(element: SettingItem): vscode.TreeItem {
+    getTreeItem(element: SettingItem | SettingGroupItem): vscode.TreeItem {
         return element;
     }
 
-    getChildren(): SettingItem[] {
+    getChildren(element?: SettingGroupItem): Array<SettingGroupItem | SettingItem> {
         const config = vscode.workspace.getConfiguration('diffTracker');
 
-        return this.settings.map(setting => {
+        if (!element) {
+            return this.settings.map(group => new SettingGroupItem(group.label));
+        }
+
+        const group = this.settings.find(g => g.label === element.label);
+        if (!group) {
+            return [];
+        }
+
+        return group.items.map(setting => {
             const value = config.get<boolean>(setting.key, true);
             return new SettingItem(setting.key, setting.label, value);
         });
