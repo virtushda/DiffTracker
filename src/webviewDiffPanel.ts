@@ -378,13 +378,13 @@ export class WebviewDiffPanel {
             height: 18px;
         }
         .hunk-actions .btn-revert {
-            background: transparent;
-            color: var(--vscode-descriptionForeground);
-            border-color: var(--vscode-widget-border);
+            background: var(--vscode-button-secondaryBackground);
+            color: var(--vscode-button-secondaryForeground);
+            border-color: var(--vscode-button-secondaryBackground);
         }
         .hunk-actions .btn-revert:hover {
-            background: var(--vscode-toolbar-hoverBackground);
-            color: var(--vscode-foreground);
+            background: var(--vscode-button-secondaryHoverBackground, var(--vscode-button-secondaryBackground));
+            color: var(--vscode-button-secondaryForeground);
         }
         .hunk-actions .btn-keep {
             background: #238636;
