@@ -176,7 +176,7 @@ export class WatchExcludePanel {
     <p>Rules are applied in this order:</p>
     <ul>
         <li>.gitignore files (including nested ones)</li>
-        <li>Built-in defaults (.git, node_modules, out, dist, build, coverage)</li>
+        <li>Built-in defaults (.git, node_modules, out, dist, build, coverage, tmp)</li>
         <li>VS Code excludes (files.watcherExclude / search.exclude / files.exclude)</li>
         <li>Patterns below (one per line, gitignore-style)</li>
     </ul>

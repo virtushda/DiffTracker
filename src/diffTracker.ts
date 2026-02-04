@@ -128,8 +128,12 @@ export class DiffTracker {
         }
 
         try {
+            const defaultExcludedDirs = ['node_modules', '.git', 'out', 'dist', 'build', 'coverage', 'tmp'];
+            const excludedGroup = defaultExcludedDirs.join('|');
+            const patternGlob = `**/!(${excludedGroup})/**`;
+
             for (const folder of folders) {
-                const pattern = new vscode.RelativePattern(folder, '**/*');
+                const pattern = new vscode.RelativePattern(folder, patternGlob);
                 const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
                 watcher.onDidChange(uri => this.onExternalFileChanged(uri));
@@ -188,7 +192,8 @@ export class DiffTracker {
             '**/out/**',
             '**/dist/**',
             '**/build/**',
-            '**/coverage/**'
+            '**/coverage/**',
+            '**/tmp/**'
         ];
     }
 
