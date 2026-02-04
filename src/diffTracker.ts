@@ -129,7 +129,9 @@ export class DiffTracker {
 
         try {
             const defaultExcludedDirs = ['node_modules', '.git', 'out', 'dist', 'build', 'coverage', 'tmp'];
-            const excludedGroup = defaultExcludedDirs.join('|');
+            const watchExcludes = this.getWatchExcludePatterns();
+            const allExcludedDirs = [...defaultExcludedDirs, ...watchExcludes.watcherExcludeDirs];
+            const excludedGroup = allExcludedDirs.join('|');
             const patternGlob = `**/!(${excludedGroup})/**`;
 
             for (const folder of folders) {
@@ -219,17 +221,41 @@ export class DiffTracker {
         return Array.from(patterns);
     }
 
-    private getWatchExcludePatterns(): string[] {
+    private getWatchExcludePatterns(): { ignoreRules: string[]; watcherExcludeDirs: string[] } {
         const config = vscode.workspace.getConfiguration('diffTracker');
-        return config.get<string[]>('watchExclude', []) ?? [];
+        const raw = config.get<string[]>('watchExclude', []) ?? [];
+        const ignoreRules: string[] = [];
+        const watcherExcludeDirs: string[] = [];
+
+        raw.forEach(line => {
+            const trimmed = line.trim();
+            if (!trimmed) {
+                return;
+            }
+            if (!trimmed.startsWith('dir:')) {
+                ignoreRules.push(trimmed);
+                return;
+            }
+
+            const value = trimmed.slice('dir:'.length).trim();
+            if (!value) {
+                return;
+            }
+            const normalized = value.replace(/\/+$/, '');
+            watcherExcludeDirs.push(normalized);
+            ignoreRules.push(`${normalized}/`);
+        });
+
+        return { ignoreRules, watcherExcludeDirs };
     }
 
     private async buildIgnoreMatcher(folder: vscode.WorkspaceFolder): Promise<Ignore> {
         const ig = ignore();
+        const watchExcludes = this.getWatchExcludePatterns();
         const basePatterns = [
             ...this.getDefaultExcludePatterns(),
             ...this.getVsCodeExcludePatterns(),
-            ...this.getWatchExcludePatterns()
+            ...watchExcludes.ignoreRules
         ];
         ig.add(basePatterns);
 

@@ -180,6 +180,7 @@ export class WatchExcludePanel {
         <li>VS Code excludes (files.watcherExclude / search.exclude / files.exclude)</li>
         <li>Patterns below (one per line, gitignore-style)</li>
     </ul>
+    <p><strong>Tip:</strong> Use <code>dir:NAME</code> (e.g. <code>dir:tmp/</code>) to exclude whole directories at the watcher level for better performance.</p>
     <textarea id="patterns" spellcheck="false"></textarea>
     <div class="actions">
         <button id="save">Save</button>
