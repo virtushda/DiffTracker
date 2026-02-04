@@ -146,6 +146,18 @@ export class WebviewDiffPanel {
                     setTimeout(() => this.update(this.filePath), 100);
                 }
                 break;
+            case 'keepAll':
+                if (message.filePath) {
+                    vscode.commands.executeCommand('diffTracker.keepAllBlocksInFile', message.filePath);
+                    setTimeout(() => this.update(this.filePath), 100);
+                }
+                break;
+            case 'revertAll':
+                if (message.filePath) {
+                    vscode.commands.executeCommand('diffTracker.revertAllBlocksInFile', message.filePath);
+                    setTimeout(() => this.update(this.filePath), 100);
+                }
+                break;
             case 'setStyle':
                 if (message.style === 'split' || message.style === 'unified') {
                     this.currentStyle = message.style;
@@ -318,6 +330,22 @@ export class WebviewDiffPanel {
         .toolbar button.secondary:hover {
             background: var(--vscode-button-secondaryHoverBackground, #45494e);
         }
+        .toolbar .btn-keep-all {
+            background: #238636;
+            color: #fff;
+            border: 1px solid #238636;
+        }
+        .toolbar .btn-keep-all:hover {
+            background: #2ea043;
+        }
+        .toolbar .btn-reject-all {
+            background: var(--vscode-button-secondaryHoverBackground, #45494e);
+            color: #fff;
+            border: 1px solid var(--vscode-button-secondaryHoverBackground, #45494e);
+        }
+        .toolbar .btn-reject-all:hover {
+            background: var(--vscode-button-secondaryHoverBackground, #4f5359);
+        }
         .toolbar .spacer {
             flex: 1;
         }
@@ -409,6 +437,8 @@ export class WebviewDiffPanel {
         <button id="btn-unified" class="secondary">Unified</button>
         <button id="btn-wrap" class="secondary">Wrap</button>
         <button id="btn-expand" class="secondary">Expand</button>
+        <button id="btn-keep-all" class="btn-keep-all">Keep All</button>
+        <button id="btn-reject-all" class="btn-reject-all">Reject All</button>
     </div>
     <div id="diff-container">
         <div class="loading">Loading diff...</div>
@@ -427,6 +457,8 @@ export class WebviewDiffPanel {
         const btnUnified = document.getElementById('btn-unified');
         const btnWrap = document.getElementById('btn-wrap');
         const btnExpand = document.getElementById('btn-expand');
+        const btnKeepAll = document.getElementById('btn-keep-all');
+        const btnRejectAll = document.getElementById('btn-reject-all');
 
         const filePath = '${escapedFilePath}';
 
@@ -585,6 +617,12 @@ export class WebviewDiffPanel {
             currentExpandAll = !currentExpandAll;
             renderDiff(currentStyle);
             vscode.postMessage({ command: 'setExpandAll', expandAll: currentExpandAll });
+        });
+        btnKeepAll.addEventListener('click', () => {
+            vscode.postMessage({ command: 'keepAll', filePath: filePath });
+        });
+        btnRejectAll.addEventListener('click', () => {
+            vscode.postMessage({ command: 'revertAll', filePath: filePath });
         });
 
         // Handle messages from extension
