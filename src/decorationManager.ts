@@ -191,7 +191,8 @@ export class DecorationManager {
                 return;
             }
 
-            const range = new vscode.Range(line, 0, line, Number.MAX_VALUE);
+            const lineText = editor.document.lineAt(line).text;
+            const range = new vscode.Range(line, 0, line, lineText.length);
 
             switch (change.type) {
                 case 'added':
@@ -232,6 +233,7 @@ export class DecorationManager {
         editor.setDecorations(this.deletedDecorationType, []);
         editor.setDecorations(this.deletedBadgeDecorationType, showDeletedBadge ? deletedBadgeRanges : []);
         editor.setDecorations(this.wordAddedDecorationType, wordAddedRanges);
+
     }
 
     public clearDecorations(editor: vscode.TextEditor) {
@@ -270,13 +272,22 @@ export class DecorationManager {
             }
         }
 
-        const lineTypes = this.diffTracker.getInlineLineTypes(filePath);
-        const inlineContent = this.diffTracker.getInlineContent(filePath);
-
-        if (!lineTypes || !inlineContent) {
+        let inlineView = this.diffTracker.getInlineView(filePath);
+        if (!inlineView) {
+            const tracked = this.diffTracker.getTrackedChanges().find(change => change.filePath === filePath);
+            if (tracked) {
+                inlineView = this.diffTracker.buildInlineViewFromContents(
+                    tracked.originalContent,
+                    tracked.currentContent
+                );
+            }
+        }
+        if (!inlineView) {
             this.clearDecorations(editor);
             return;
         }
+        const lineTypes = inlineView.lineTypes;
+        const inlineContent = inlineView.content;
 
         const config = vscode.workspace.getConfiguration('diffTracker');
         const highlightWordChanges = config.get<boolean>('highlightWordChanges', true);
@@ -320,8 +331,10 @@ export class DecorationManager {
                     const newLine = inlineLines[addedLineIdx] || '';
 
                     // Add line-level decorations
-                    deletedRanges.push(new vscode.Range(deletedLineIdx, 0, deletedLineIdx, Number.MAX_VALUE));
-                    addedRanges.push(new vscode.Range(addedLineIdx, 0, addedLineIdx, Number.MAX_VALUE));
+                    const deletedLineText = editor.document.lineAt(deletedLineIdx).text;
+                    const addedLineText = editor.document.lineAt(addedLineIdx).text;
+                    deletedRanges.push(new vscode.Range(deletedLineIdx, 0, deletedLineIdx, deletedLineText.length));
+                    addedRanges.push(new vscode.Range(addedLineIdx, 0, addedLineIdx, addedLineText.length));
 
                     // Compute word-level diff (if enabled)
                     if (highlightWordChanges) {
@@ -349,20 +362,23 @@ export class DecorationManager {
                 // Remaining unpaired deleted lines (line-level only)
                 for (let j = pairCount; j < deletedCount; j++) {
                     const lineIdx = deletedStart + j;
-                    deletedRanges.push(new vscode.Range(lineIdx, 0, lineIdx, Number.MAX_VALUE));
+                    const deletedLineText = editor.document.lineAt(lineIdx).text;
+                    deletedRanges.push(new vscode.Range(lineIdx, 0, lineIdx, deletedLineText.length));
                 }
 
                 // Remaining unpaired added lines (line-level only)
                 for (let j = pairCount; j < addedCount; j++) {
                     const lineIdx = addedStart + j;
-                    addedRanges.push(new vscode.Range(lineIdx, 0, lineIdx, Number.MAX_VALUE));
+                    const addedLineText = editor.document.lineAt(lineIdx).text;
+                    addedRanges.push(new vscode.Range(lineIdx, 0, lineIdx, addedLineText.length));
                 }
 
                 continue;
             }
 
             if (type === 'added') {
-                addedRanges.push(new vscode.Range(i, 0, i, Number.MAX_VALUE));
+                const lineText = editor.document.lineAt(i).text;
+                addedRanges.push(new vscode.Range(i, 0, i, lineText.length));
             }
             i++;
         }
@@ -375,19 +391,18 @@ export class DecorationManager {
     }
 
     private isEditorInDiffView(editor: vscode.TextEditor): boolean {
-        const targetUri = editor.document.uri.toString();
-
-        for (const group of vscode.window.tabGroups.all) {
-            for (const tab of group.tabs) {
-                const input = tab.input;
-                if (input instanceof vscode.TabInputTextDiff) {
-                    if (input.original.toString() === targetUri || input.modified.toString() === targetUri) {
-                        return true;
-                    }
-                }
-            }
+        const activeGroup = vscode.window.tabGroups.activeTabGroup;
+        const activeTab = activeGroup?.activeTab;
+        if (!activeTab) {
+            return false;
         }
 
-        return false;
+        const input = activeTab.input;
+        if (!(input instanceof vscode.TabInputTextDiff)) {
+            return false;
+        }
+
+        const targetUri = editor.document.uri.toString();
+        return input.original.toString() === targetUri || input.modified.toString() === targetUri;
     }
 }

@@ -394,34 +394,82 @@ export class DiffTracker {
 
             const files = await vscode.workspace.findFiles(
                 new vscode.RelativePattern(folder, '**/*'),
-                new vscode.RelativePattern(folder, '**/{node_modules,.git,out,dist,build,coverage}/**')
+                new vscode.RelativePattern(folder, '**/{node_modules,.git,out,dist,build,coverage,tmp}/**')
             );
 
-            for (const uri of files) {
+            const candidates = files.filter(uri => {
+                if (this.isPathIgnored(uri)) {
+                    return false;
+                }
+                return !this.fileSnapshots.has(uri.fsPath);
+            });
+
+            const batchSize = 50;
+            const readConcurrency = 8;
+
+            for (let i = 0; i < candidates.length; i += batchSize) {
                 if (!this.isRecording) {
                     return;
                 }
 
-                if (this.isPathIgnored(uri)) {
-                    continue;
-                }
-
-                if (this.fileSnapshots.has(uri.fsPath)) {
-                    continue;
-                }
-
-                try {
-                    const content = await vscode.workspace.fs.readFile(uri);
-                    const text = new TextDecoder('utf-8').decode(content);
+                const batch = candidates.slice(i, i + batchSize);
+                await this.runWithConcurrency(batch, readConcurrency, async (uri) => {
+                    if (!this.isRecording) {
+                        return;
+                    }
+                    if (this.fileSnapshots.has(uri.fsPath)) {
+                        return;
+                    }
+                    const text = await this.readFileSnapshot(uri);
+                    if (text === null) {
+                        return;
+                    }
                     this.fileSnapshots.set(uri.fsPath, text);
-                } catch {
-                    // Ignore unreadable files
+                });
+
+                if (!this.isRecording) {
+                    return;
                 }
+
+                await this.yieldToEventLoop();
             }
         }
 
         this.snapshotInitialized = true;
         this.processPendingExternalChanges();
+    }
+
+    private async readFileSnapshot(uri: vscode.Uri): Promise<string | null> {
+        try {
+            const stat = await vscode.workspace.fs.stat(uri);
+            const maxSizeBytes = 5 * 1024 * 1024;
+            if (stat.size > maxSizeBytes) {
+                return null;
+            }
+            const content = await vscode.workspace.fs.readFile(uri);
+            return new TextDecoder('utf-8').decode(content);
+        } catch {
+            return null;
+        }
+    }
+
+    private async runWithConcurrency<T>(
+        items: T[],
+        limit: number,
+        worker: (item: T) => Promise<void>
+    ): Promise<void> {
+        let index = 0;
+        const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+            while (index < items.length) {
+                const current = items[index++];
+                await worker(current);
+            }
+        });
+        await Promise.all(workers);
+    }
+
+    private async yieldToEventLoop(): Promise<void> {
+        await new Promise(resolve => setTimeout(resolve, 0));
     }
 
     private async processPendingExternalChanges(): Promise<void> {
