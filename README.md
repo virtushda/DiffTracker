@@ -129,7 +129,7 @@ None at this time. Please open an issue if you find a bug.
 - Cursor-like WebView diff: floating Undo/Keep, unified view default, wrap/expand, and Keep All/Reject All in the toolbar
 - Offline WebView rendering (bundled @pierre/diffs)
 - Workspace-wide file watching (no longer limited to open files)
-- New Watch Ignore panel with `.gitignore` support + `dir:` rules for faster watcher excludes
+- New Watch Ignore panel with `.gitignore` support
 - Faster tracking in large workspaces (debounced changes + optimized watchers)
 - Smoother recording start on big repos (baseline builds in batches, large files skipped)
 
