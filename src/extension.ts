@@ -276,8 +276,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Block-wise keep command
     context.subscriptions.push(
-        vscode.commands.registerCommand('diffTracker.keepBlock', (filePath: string, blockIndex: number) => {
-            const success = diffTracker.keepBlock(filePath, blockIndex);
+        vscode.commands.registerCommand('diffTracker.keepBlock', async (filePath: string, blockIndex: number) => {
+            const success = await diffTracker.keepBlock(filePath, blockIndex);
             if (success) {
                 codeLensProvider.refresh();
                 treeDataProvider.refresh();
@@ -315,10 +315,12 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Keep all blocks in a file (accept all changes)
     context.subscriptions.push(
-        vscode.commands.registerCommand('diffTracker.keepAllBlocksInFile', (filePath: string) => {
-            diffTracker.keepAllChangesInFile(filePath);
-            codeLensProvider.refresh();
-            treeDataProvider.refresh();
+        vscode.commands.registerCommand('diffTracker.keepAllBlocksInFile', async (filePath: string) => {
+            const success = await diffTracker.keepAllChangesInFile(filePath);
+            if (success) {
+                codeLensProvider.refresh();
+                treeDataProvider.refresh();
+            }
         })
     );
 

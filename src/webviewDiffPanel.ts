@@ -108,14 +108,22 @@ export class WebviewDiffPanel {
     }
 
     private sendDataUpdate(): void {
-        const originalContent = this.diffTracker.getOriginalContent(this.filePath) || '';
         const trackedChanges = this.diffTracker.getTrackedChanges();
         const fileChange = trackedChanges.find(c => c.filePath === this.filePath);
+        const originalContent =
+            fileChange?.originalContent ??
+            this.diffTracker.getOriginalContent(this.filePath) ??
+            '';
         const currentContent = fileChange?.currentContent || originalContent;
         const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath);
+        const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
+        const lang = this.getLangForFileName(fileName);
 
         this.panel.webview.postMessage({
             command: 'updateData',
+            filePath: this.filePath,
+            fileName,
+            lang,
             oldContents: originalContent,
             newContents: currentContent,
             changeBlocks: changeBlocks.map(b => ({
@@ -215,24 +223,7 @@ export class WebviewDiffPanel {
         this.panel.webview.postMessage({ command: 'setTheme', themeType });
     }
 
-    private getHtmlContent(): string {
-        const webview = this.panel.webview;
-        const originalContent = this.diffTracker.getOriginalContent(this.filePath) || '';
-        const trackedChanges = this.diffTracker.getTrackedChanges();
-        const fileChange = trackedChanges.find(c => c.filePath === this.filePath);
-        const currentContent = fileChange?.currentContent || originalContent;
-        const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
-
-        // Get change blocks from diffTracker - this is the source of truth for block indexing
-        const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath);
-        const changeBlocksJson = JSON.stringify(changeBlocks.map(b => ({
-            startLine: b.startLine,
-            endLine: b.endLine,
-            type: b.type,
-            blockIndex: b.blockIndex
-        })));
-
-        // Detect language from file extension
+    private getLangForFileName(fileName: string): string {
         const ext = fileName.split('.').pop()?.toLowerCase() || '';
         const langMap: Record<string, string> = {
             'ts': 'typescript',
@@ -261,7 +252,28 @@ export class WebviewDiffPanel {
             'zsh': 'bash',
             'zig': 'zig',
         };
-        const lang = langMap[ext] || 'plaintext';
+        return langMap[ext] || 'plaintext';
+    }
+
+    private getHtmlContent(): string {
+        const webview = this.panel.webview;
+        const originalContent = this.diffTracker.getOriginalContent(this.filePath) || '';
+        const trackedChanges = this.diffTracker.getTrackedChanges();
+        const fileChange = trackedChanges.find(c => c.filePath === this.filePath);
+        const currentContent = fileChange?.currentContent || originalContent;
+        const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
+
+        // Get change blocks from diffTracker - this is the source of truth for block indexing
+        const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath);
+        const changeBlocksJson = JSON.stringify(changeBlocks.map(b => ({
+            startLine: b.startLine,
+            endLine: b.endLine,
+            type: b.type,
+            blockIndex: b.blockIndex
+        })));
+
+        // Detect language from file extension
+        const lang = this.getLangForFileName(fileName);
 
         // Determine initial theme
         const themeKind = vscode.window.activeColorTheme.kind;
@@ -460,7 +472,7 @@ export class WebviewDiffPanel {
         const btnKeepAll = document.getElementById('btn-keep-all');
         const btnRejectAll = document.getElementById('btn-reject-all');
 
-        const filePath = '${escapedFilePath}';
+        let filePath = '${escapedFilePath}';
 
         const oldFile = {
             name: '${this.escapeHtml(fileName)}',
@@ -632,6 +644,17 @@ export class WebviewDiffPanel {
                 fileDiffInstance.setThemeType(message.themeType);
             } else if (message.command === 'updateData') {
                 // Update data and re-render with current style
+                if (typeof message.filePath === 'string') {
+                    filePath = message.filePath;
+                }
+                if (typeof message.fileName === 'string') {
+                    oldFile.name = message.fileName;
+                    newFile.name = message.fileName;
+                }
+                if (typeof message.lang === 'string') {
+                    oldFile.lang = message.lang;
+                    newFile.lang = message.lang;
+                }
                 oldFile.contents = message.oldContents;
                 newFile.contents = message.newContents;
                 changeBlocks.length = 0;

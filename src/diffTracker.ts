@@ -137,22 +137,22 @@ export class DiffTracker {
         }
 
         try {
-            const defaultExcludedDirs = ['node_modules', '.git', 'out', 'dist', 'build', 'coverage', 'tmp'];
-            const watchExcludes = this.getWatchExcludePatterns();
-            const allExcludedDirs = [...defaultExcludedDirs, ...watchExcludes.watcherExcludeDirs];
-            const excludedGroup = allExcludedDirs.join('|');
-            const patternGlob = `**/!(${excludedGroup})/**`;
+            const patternGlob = '**/*';
 
             for (const folder of folders) {
-                const pattern = new vscode.RelativePattern(folder, patternGlob);
-                const watcher = vscode.workspace.createFileSystemWatcher(pattern);
+                const createWatcher = (glob: string) => {
+                    const pattern = new vscode.RelativePattern(folder, glob);
+                    const watcher = vscode.workspace.createFileSystemWatcher(pattern);
 
-                watcher.onDidChange(uri => this.onExternalFileChanged(uri));
-                watcher.onDidCreate(uri => this.onExternalFileCreated(uri));
-                watcher.onDidDelete(uri => this.onExternalFileDeleted(uri));
+                    watcher.onDidChange(uri => this.onExternalFileChanged(uri));
+                    watcher.onDidCreate(uri => this.onExternalFileCreated(uri));
+                    watcher.onDidDelete(uri => this.onExternalFileDeleted(uri));
 
-                this.fileWatchers.push(watcher);
-                this.disposables.push(watcher);
+                    this.fileWatchers.push(watcher);
+                    this.disposables.push(watcher);
+                };
+
+                createWatcher(patternGlob);
             }
 
             this.externalWatcherEnabled = true;
@@ -231,32 +231,20 @@ export class DiffTracker {
         return Array.from(patterns);
     }
 
-    private getWatchExcludePatterns(): { ignoreRules: string[]; watcherExcludeDirs: string[] } {
+    private getWatchExcludePatterns(): string[] {
         const config = vscode.workspace.getConfiguration('diffTracker');
         const raw = config.get<string[]>('watchExclude', []) ?? [];
         const ignoreRules: string[] = [];
-        const watcherExcludeDirs: string[] = [];
 
         raw.forEach(line => {
             const trimmed = line.trim();
             if (!trimmed) {
                 return;
             }
-            if (!trimmed.startsWith('dir:')) {
-                ignoreRules.push(trimmed);
-                return;
-            }
-
-            const value = trimmed.slice('dir:'.length).trim();
-            if (!value) {
-                return;
-            }
-            const normalized = value.replace(/\/+$/, '');
-            watcherExcludeDirs.push(normalized);
-            ignoreRules.push(`${normalized}/`);
+            ignoreRules.push(trimmed);
         });
 
-        return { ignoreRules, watcherExcludeDirs };
+        return ignoreRules;
     }
 
     private async buildIgnoreMatcher(folder: vscode.WorkspaceFolder): Promise<Ignore> {
@@ -265,7 +253,7 @@ export class DiffTracker {
         const basePatterns = [
             ...this.getDefaultExcludePatterns(),
             ...this.getVsCodeExcludePatterns(),
-            ...watchExcludes.ignoreRules
+            ...watchExcludes
         ];
         ig.add(basePatterns);
 
@@ -666,7 +654,10 @@ export class DiffTracker {
             return;
         }
 
-        if (originalContent === currentContent) {
+        const normalizedOriginal = this.normalizeEol(originalContent);
+        const normalizedCurrent = this.normalizeEol(currentContent);
+
+        if (normalizedOriginal === normalizedCurrent) {
             this.trackedChanges.delete(filePath);
             this.lineChanges.delete(filePath);
             this.inlineViews.delete(filePath);
@@ -674,7 +665,7 @@ export class DiffTracker {
             return;
         }
 
-        const changes = Diff.diffLines(originalContent, currentContent);
+        const changes = Diff.diffLines(normalizedOriginal, normalizedCurrent);
         const fileName = filePath.split('/').pop() || filePath;
 
         this.trackedChanges.set(filePath, {
@@ -700,17 +691,15 @@ export class DiffTracker {
                 const doc = await vscode.workspace.openTextDocument(uri);
                 const edit = new vscode.WorkspaceEdit();
 
-                // Replace entire document with original content
-                const fullRange = new vscode.Range(
-                    doc.lineAt(0).range.start,
-                    doc.lineAt(doc.lineCount - 1).range.end
-                );
+                // Replace entire document (including final newline if present)
+                const fullRange = this.getFullDocumentRange(doc);
 
                 edit.replace(uri, fullRange, change.originalContent);
 
                 const success = await vscode.workspace.applyEdit(edit);
                 if (success) {
                     await doc.save();
+                    this.fileSnapshots.set(change.filePath, doc.getText());
                     revertedCount++;
                 }
             } catch (error) {
@@ -735,10 +724,7 @@ export class DiffTracker {
             const doc = await vscode.workspace.openTextDocument(uri);
             const edit = new vscode.WorkspaceEdit();
 
-            const fullRange = new vscode.Range(
-                doc.lineAt(0).range.start,
-                doc.lineAt(doc.lineCount - 1).range.end
-            );
+            const fullRange = this.getFullDocumentRange(doc);
 
             edit.replace(uri, fullRange, change.originalContent);
             const success = await vscode.workspace.applyEdit(edit);
@@ -747,6 +733,7 @@ export class DiffTracker {
             }
 
             await doc.save();
+            this.fileSnapshots.set(change.filePath, doc.getText());
         } catch (error) {
             console.error(`Failed to revert ${filePath}:`, error);
             return false;
@@ -877,7 +864,7 @@ export class DiffTracker {
      * Keep a specific change block (accept the changes)
      * This surgically updates the snapshot to include only this block's changes
      */
-    public keepBlock(filePath: string, blockIndex: number): boolean {
+    public async keepBlock(filePath: string, blockIndex: number): Promise<boolean> {
         const blocks = this.getChangeBlocks(filePath);
         if (blockIndex < 0 || blockIndex >= blocks.length) {
             return false;
@@ -885,14 +872,16 @@ export class DiffTracker {
 
         const block = blocks[blockIndex];
         const originalContent = this.fileSnapshots.get(filePath);
+        const tracked = this.trackedChanges.get(filePath);
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
+        const currentText = doc?.getText() ?? tracked?.currentContent;
 
-        if (originalContent === undefined || !doc) {
+        if (originalContent === undefined || currentText === undefined) {
             return false;
         }
 
         const originalLines = originalContent.split('\n');
-        const currentLines = doc.getText().split('\n');
+        const currentLines = currentText.split('\n');
 
         // Surgically update the snapshot based on block type
         if (block.type === 'added') {
@@ -935,9 +924,8 @@ export class DiffTracker {
         // Update the snapshot with the modified original
         this.fileSnapshots.set(filePath, originalLines.join('\n'));
 
-        // Recalculate changes
-        this.calculateLineChanges(filePath);
-        this._onDidTrackChanges.fire();
+        // Recompute tracked diff against the updated snapshot
+        this.updateTrackedDiff(filePath, currentText);
 
         return true;
     }
@@ -969,14 +957,24 @@ export class DiffTracker {
      * Keep all changes in a file (accept all changes)
      * Updates the snapshot to match current document content
      */
-    public keepAllChangesInFile(filePath: string): boolean {
-        const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
-        if (!doc) {
-            return false;
+    public async keepAllChangesInFile(filePath: string): Promise<boolean> {
+        const tracked = this.trackedChanges.get(filePath);
+        let currentContent = tracked?.currentContent;
+
+        if (!currentContent) {
+            let doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
+            if (!doc) {
+                try {
+                    doc = await vscode.workspace.openTextDocument(vscode.Uri.file(filePath));
+                } catch {
+                    return false;
+                }
+            }
+            currentContent = doc.getText();
         }
 
         // Update snapshot to current content
-        this.fileSnapshots.set(filePath, doc.getText());
+        this.fileSnapshots.set(filePath, currentContent);
 
         // Clear tracked changes for this file
         this.trackedChanges.delete(filePath);
@@ -1125,31 +1123,8 @@ export class DiffTracker {
             return;
         }
 
-        const originalContent = this.fileSnapshots.get(filePath)!;
         const currentContent = doc.getText();
-
-        if (originalContent === currentContent) {
-            this.trackedChanges.delete(filePath);
-            this.lineChanges.delete(filePath);
-            this.inlineViews.delete(filePath);
-            this._onDidTrackChanges.fire();
-            return;
-        }
-
-        const changes = Diff.diffLines(originalContent, currentContent);
-
-        const fileName = filePath.split('/').pop() || filePath;
-        this.trackedChanges.set(filePath, {
-            filePath,
-            fileName,
-            originalContent,
-            currentContent,
-            changes,
-            timestamp: new Date()
-        });
-
-        this.calculateLineChanges(filePath);
-        this._onDidTrackChanges.fire();
+        this.updateTrackedDiff(filePath, currentContent);
     }
 
     private ensureInlineView(filePath: string): InlineDiffView | undefined {
@@ -1208,12 +1183,14 @@ export class DiffTracker {
         originalLines: string[],
         currentLines: string[]
     ): { lineChanges: LineChange[]; inlineView: InlineDiffView } {
+        const originalComparable = originalLines.map(line => this.normalizeLineForComparison(line));
+        const currentComparable = currentLines.map(line => this.normalizeLineForComparison(line));
         const originalNormalized = originalLines.map(line => this.normalizeLineForMatch(line));
         const currentNormalized = currentLines.map(line => this.normalizeLineForMatch(line));
 
         // Use the mature diff library instead of our custom patienceDiff
-        const originalText = originalLines.join('\n');
-        const currentText = currentLines.join('\n');
+        const originalText = originalComparable.join('\n');
+        const currentText = currentComparable.join('\n');
         const diffResult = Diff.diffLines(originalText, currentText);
 
         // Convert diff library format to our arrayDiff format
@@ -1362,8 +1339,10 @@ export class DiffTracker {
             while (offset < length) {
                 const oldLine = originalLines[originalIndex];
                 const newLine = currentLines[currentIndex];
+                const oldComparable = originalComparable[originalIndex];
+                const newComparable = currentComparable[currentIndex];
 
-                if (oldLine === newLine) {
+                if (oldComparable === newComparable) {
                     inlineLines.push(newLine);
                     inlineTypes.push('unchanged');
                     // Record unchanged line for anchor mapping (used by decorationManager)
@@ -1383,8 +1362,8 @@ export class DiffTracker {
 
                 let runLength = 0;
                 while (offset + runLength < length) {
-                    const oldCandidate = originalLines[originalIndex + runLength];
-                    const newCandidate = currentLines[currentIndex + runLength];
+                    const oldCandidate = originalComparable[originalIndex + runLength];
+                    const newCandidate = currentComparable[currentIndex + runLength];
                     if (oldCandidate === newCandidate) {
                         break;
                     }
@@ -1535,6 +1514,17 @@ export class DiffTracker {
         const union = new Set([...set1, ...set2]);
 
         return union.size > 0 ? intersection.size / union.size : 0;
+    }
+
+    private getFullDocumentRange(doc: vscode.TextDocument): vscode.Range {
+        if (doc.lineCount === 0) {
+            return new vscode.Range(0, 0, 0, 0);
+        }
+
+        const firstLine = doc.lineAt(0);
+        const lastLine = doc.lineAt(doc.lineCount - 1);
+        const end = lastLine.rangeIncludingLineBreak.end;
+        return new vscode.Range(firstLine.range.start, end);
     }
 
     /**
@@ -1905,6 +1895,14 @@ export class DiffTracker {
         value = value.replace(/\s+/g, ' ');
 
         return value.trim();
+    }
+
+    private normalizeEol(input: string): string {
+        return input.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    }
+
+    private normalizeLineForComparison(input: string): string {
+        return input.replace(/\r$/, '');
     }
 
     public dispose() {

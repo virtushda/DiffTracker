@@ -15,17 +15,6 @@
       .filter((line) => line.length > 0);
   }
 
-  function isInvalidDirRule(line) {
-    if (!line.startsWith('dir:')) {
-      return false;
-    }
-    const value = line.slice('dir:'.length).trim();
-    if (!value) {
-      return false;
-    }
-    return /[*?\[\]!]/.test(value);
-  }
-
   function renderLines(lines) {
     textarea.value = lines.join('\n');
   }
@@ -42,12 +31,6 @@
   testBtn.addEventListener('click', () => {
     const value = testInput.value.trim();
     const lines = normalizeLines(textarea.value);
-    const invalidDirRule = lines.find(isInvalidDirRule);
-    if (invalidDirRule) {
-      testResult.textContent = 'Directory rules do not support glob patterns';
-      testResult.style.color = 'var(--vscode-testing-iconFailed, #f85149)';
-      return;
-    }
     testResult.textContent = 'Testing...';
     testResult.style.color = 'var(--vscode-descriptionForeground)';
     vscode.postMessage({ command: 'testPath', testPath: value });
