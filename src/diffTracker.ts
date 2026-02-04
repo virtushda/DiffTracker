@@ -44,6 +44,8 @@ export class DiffTracker {
     private disposables: vscode.Disposable[] = [];
     private fileWatchers: vscode.FileSystemWatcher[] = [];
     private ignoreMatchers = new Map<string, Ignore>();
+    private ignoreResultCache = new Map<string, boolean>();
+    private gitignoreCache = new Map<string, { files: string[]; mtimeMap: Map<string, number> }>();
     private externalWatcherEnabled = false;
     private snapshotInitialized = false;
     private baselineBuilding = false;
@@ -181,6 +183,7 @@ export class DiffTracker {
 
     private async refreshIgnoreMatchers(): Promise<void> {
         this.ignoreMatchers.clear();
+        this.ignoreResultCache.clear();
         const folders = vscode.workspace.workspaceFolders;
         if (!folders) {
             return;
@@ -266,10 +269,7 @@ export class DiffTracker {
         ];
         ig.add(basePatterns);
 
-        const gitignoreFiles = await vscode.workspace.findFiles(
-            new vscode.RelativePattern(folder, '**/.gitignore'),
-            new vscode.RelativePattern(folder, '**/.git/**')
-        );
+        const gitignoreFiles = await this.getCachedGitignoreFiles(folder);
 
         for (const uri of gitignoreFiles) {
             try {
@@ -295,6 +295,51 @@ export class DiffTracker {
         }
 
         return ig;
+    }
+
+    private async getCachedGitignoreFiles(folder: vscode.WorkspaceFolder): Promise<vscode.Uri[]> {
+        const folderPath = folder.uri.fsPath;
+        const cached = this.gitignoreCache.get(folderPath);
+        if (!cached) {
+            return this.refreshGitignoreCache(folder);
+        }
+
+        const mtimeMap = cached.mtimeMap;
+        for (const filePath of cached.files) {
+            try {
+                const stat = await vscode.workspace.fs.stat(vscode.Uri.file(filePath));
+                const mtime = stat.mtime;
+                if (mtimeMap.get(filePath) !== mtime) {
+                    return this.refreshGitignoreCache(folder);
+                }
+            } catch {
+                return this.refreshGitignoreCache(folder);
+            }
+        }
+
+        return cached.files.map(filePath => vscode.Uri.file(filePath));
+    }
+
+    private async refreshGitignoreCache(folder: vscode.WorkspaceFolder): Promise<vscode.Uri[]> {
+        const gitignoreFiles = await vscode.workspace.findFiles(
+            new vscode.RelativePattern(folder, '**/.gitignore'),
+            new vscode.RelativePattern(folder, '**/.git/**')
+        );
+
+        const mtimeMap = new Map<string, number>();
+        const files: string[] = [];
+        for (const uri of gitignoreFiles) {
+            files.push(uri.fsPath);
+            try {
+                const stat = await vscode.workspace.fs.stat(uri);
+                mtimeMap.set(uri.fsPath, stat.mtime);
+            } catch {
+                // ignore stat errors
+            }
+        }
+
+        this.gitignoreCache.set(folder.uri.fsPath, { files, mtimeMap });
+        return gitignoreFiles;
     }
 
     private addGitignorePatterns(ig: Ignore, content: string, prefix: string) {
@@ -364,7 +409,15 @@ export class DiffTracker {
         }
 
         const relPath = this.toPosixPath(path.relative(folder.uri.fsPath, uri.fsPath));
-        return matcher.ignores(relPath);
+        const cacheKey = `${folder.uri.fsPath}::${relPath}`;
+        const cached = this.ignoreResultCache.get(cacheKey);
+        if (cached !== undefined) {
+            return cached;
+        }
+
+        const ignored = matcher.ignores(relPath);
+        this.ignoreResultCache.set(cacheKey, ignored);
+        return ignored;
     }
 
     private pruneIgnoredTrackedChanges(): void {
