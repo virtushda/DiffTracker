@@ -3,7 +3,10 @@
 [![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Diff%20Tracker-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=Wizyoung.diff-tracker)
 [![Open VSX](https://img.shields.io/badge/Open%20VSX-Diff%20Tracker-5E60E7?logo=opensourceinitiative&logoColor=white)](https://open-vsx.org/extension/Wizyoung/diff-tracker)
 
-Diff Tracker is a VS Code extension that records file changes and shows a Git-like inline diff directly in the editor.
+Diff Tracker is a VS Code extension that records file changes and provides three review modes:
+- Inline readonly diff document
+- VS Code side-by-side diff
+- Cursor-like WebView diff with floating Undo/Keep actions
 
 ## Screenshots
 
@@ -23,40 +26,38 @@ Diff Tracker is a VS Code extension that records file changes and shows a Git-li
 
 ## Features
 
-- Activity Bar view for tracked changes
-- Recording mode to start and stop tracking
-- Inline diff with added/removed highlights
-- **Word-level diff highlighting** - precisely highlights changed words within modified lines
-- Side-by-side diff on demand
-- Hover details for deleted/modified content
-- Multi-file tracking with timestamps
-- Block-wise Revert/Keep buttons (like Cursor)
-- File-level "Revert All" / "Keep All" CodeLens
-- Revert per file or revert all
-- Clear all tracked diffs
-- Editor title buttons for inline and side-by-side diff
-- Settings panel in sidebar to toggle display options
+- Activity Bar **Change Recording** tree with file grouping
+- Recording mode (start/stop) with workspace baseline snapshot
+- Workspace-wide file watching (including external file changes)
+- Inline readonly diff view with line and word-level highlights
+- Side-by-side diff (`Original ↔ Current`) via built-in VS Code diff
+- Cursor-like WebView diff (Split/Unified, Wrap, Expand, Keep All, Reject All)
+- Block-wise actions: Undo/Keep per change block
+- File-level actions: Revert file, Revert all files, Keep all changes in file
+- Deleted-line badge, CodeLens actions, and hover details
+- Settings panel + Watch Ignore editor (`.gitignore` style patterns)
 
 ## Usage
 
-1. Open the Diff Tracker view from the Activity Bar.
-2. Click Start Recording.
-3. Edit any file in your workspace.
-4. Click a file in the left list to open the inline diff.
-5. Use the editor title buttons to open:
-   - Inline Diff (single-column)
+1. Open **Diff Tracker** from the Activity Bar.
+2. Click **Start Recording**.
+3. Edit files in your workspace.
+4. In **Change Recording**, click a changed file to open inline diff.
+5. Use context menu or editor title buttons to open:
+   - Inline Diff (active file)
    - Side-by-Side Diff
-6. Use Revert File or Revert All as needed.
-7. Click Clear Diffs to remove all tracked changes.
-8. Click Stop Recording when you are done.
+   - WebView Diff
+6. In WebView Diff, use block-level **Undo/Keep** or file-level **Keep All/Reject All**.
+7. Use **Revert File** / **Revert All Changes** as needed.
+8. Stop recording when done.
 
 ## How It Works
 
 When recording starts, Diff Tracker:
-1. Captures a baseline snapshot for files
-2. Watches for content changes
-3. Builds inline and side-by-side diffs
-4. Updates the editor and the changes view in real time
+1. Captures baseline snapshots for workspace files (batched)
+2. Tracks file/document changes and rebuilds line/block diffs
+3. Serves virtual inline/original documents
+4. Keeps tree, decorations, CodeLens, and WebView in sync
 
 ## Installation
 
@@ -79,7 +80,7 @@ When recording starts, Diff Tracker:
 
 ## Extension Settings
 
-This extension provides the following settings (toggle via the sidebar Settings panel):
+This extension provides the following settings:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
@@ -88,10 +89,16 @@ This extension provides the following settings (toggle via the sidebar Settings 
 | `diffTracker.highlightAddedLines` | `true` | Highlight added lines with green background |
 | `diffTracker.highlightModifiedLines` | `true` | Highlight modified lines with blue background |
 | `diffTracker.highlightWordChanges` | `true` | Highlight word-level changes within modified lines |
+| `diffTracker.watchExclude` | `[]` | Additional watch ignore patterns (`.gitignore` style) |
+| `diffTracker.externalPolling` | `true` | Poll filesystem as a fallback when watcher misses updates |
+| `diffTracker.externalPollingIntervalMs` | `2000` | Polling interval in milliseconds |
+
+You can toggle display/highlight settings in the sidebar **Settings** panel, and edit watch ignore patterns via **Edit Watch Ignores**.
 
 ## Known Issues
 
-None at this time. Please open an issue if you find a bug.
+- Pure line-ending-style changes (CRLF/LF only) are currently treated as no logical content change.
+- If you find a reproducible diff/render edge case, please open an issue with a minimal file sample.
 
 ## Release Notes
 
@@ -132,6 +139,13 @@ None at this time. Please open an issue if you find a bug.
 - New Watch Ignore panel with `.gitignore` support
 - Faster tracking in large workspaces (debounced changes + optimized watchers)
 - Smoother recording start on big repos (baseline builds in batches, large files skipped)
+
+### 0.4.1
+- Refactor diff pipeline to use a unified logical-line model
+- Stabilize block grouping for large paste/delete and EOF scenarios
+- Fix WebView empty-file rendering fallback that could hide block actions after full deletion
+- Unify inline virtual URI mapping and refresh flow to prevent stale inline readonly content
+- Improve mixed newline handling (LF/CRLF/CR) in Keep/Revert block operations
 
 ## License
 

@@ -2,7 +2,7 @@
   "name": "diff-tracker",
   "displayName": "Diff Tracker",
   "description": "Visual file diff tracking - record and display changes in real-time",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "publisher": "Wizyoung",
   "author": "Wizyoung",
   "icon": "resources/marketplace-icon.png",
@@ -82,6 +82,16 @@
             "type": "string"
           },
           "description": "Additional ignore patterns for file watching (one pattern per entry, gitignore-style)"
+        },
+        "diffTracker.externalPolling": {
+          "type": "boolean",
+          "default": true,
+          "description": "Fallback polling for external file changes when file watcher misses"
+        },
+        "diffTracker.externalPollingIntervalMs": {
+          "type": "number",
+          "default": 2000,
+          "description": "Polling interval in milliseconds for external file changes"
         }
       }
     },
