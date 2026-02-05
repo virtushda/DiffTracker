@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import * as Diff from 'diff';
 import { DiffTracker } from './diffTracker';
+import { toTrackedFilePath } from './utils/inlineDiffUri';
 
 export class DecorationManager {
     private addedDecorationType: vscode.TextEditorDecorationType;
@@ -261,16 +262,7 @@ export class DecorationManager {
     }
 
     private updateInlineDecorations(editor: vscode.TextEditor) {
-        // Extract original file path (remove (Diff) prefix if present)
-        let filePath = editor.document.uri.fsPath;
-        const lastSlash = filePath.lastIndexOf('/');
-        if (lastSlash !== -1) {
-            const dir = filePath.substring(0, lastSlash);
-            const fileName = filePath.substring(lastSlash + 1);
-            if (fileName.startsWith('(Diff) ')) {
-                filePath = dir + '/' + fileName.substring(7);
-            }
-        }
+        const filePath = toTrackedFilePath(editor.document.uri.fsPath);
 
         let inlineView = this.diffTracker.getInlineView(filePath);
         if (!inlineView) {

@@ -114,7 +114,12 @@ export class WebviewDiffPanel {
             fileChange?.originalContent ??
             this.diffTracker.getOriginalContent(this.filePath) ??
             '';
-        const currentContent = fileChange?.currentContent || originalContent;
+        // Try to get current content from: tracked changes > open document > original
+        let currentContent = fileChange?.currentContent;
+        if (currentContent === undefined) {
+            const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.filePath);
+            currentContent = doc?.getText() ?? originalContent;
+        }
         const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath);
         const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
         const lang = this.getLangForFileName(fileName);
@@ -126,44 +131,56 @@ export class WebviewDiffPanel {
             lang,
             oldContents: originalContent,
             newContents: currentContent,
-            changeBlocks: changeBlocks.map(b => ({
-                startLine: b.startLine,
-                endLine: b.endLine,
-                type: b.type,
-                blockIndex: b.blockIndex
-            })),
+            changeBlocks: changeBlocks.map(b => {
+                const originalRange = this.getOriginalRangeForBlock(b);
+                return {
+                    originalStartLine: originalRange.startLine,
+                    originalEndLine: originalRange.endLine,
+                    blockId: b.blockId,
+                    startLine: b.startLine,
+                    endLine: b.endLine,
+                    type: b.type,
+                    blockIndex: b.blockIndex
+                };
+            }),
             style: this.currentStyle,
             wrap: this.currentWrap,
             expandAll: this.currentExpandAll
         });
     }
 
-    private handleMessage(message: { command: string; filePath?: string; blockIndex?: number; lineNumber?: number; hunkIndex?: number; changeBlockIndex?: number; style?: string; wrap?: boolean; expandAll?: boolean }): void {
+    private handleMessage(message: { command: string; filePath?: string; blockIndex?: number; lineNumber?: number; hunkIndex?: number; changeBlockIndex?: number; changeBlockId?: string; style?: string; wrap?: boolean; expandAll?: boolean }): void {
         switch (message.command) {
             case 'revertBlock':
-                if (message.filePath && message.changeBlockIndex !== undefined) {
-                    vscode.commands.executeCommand('diffTracker.revertBlock', message.filePath, message.changeBlockIndex);
-                    // Refresh the webview after action
-                    setTimeout(() => this.update(this.filePath), 100);
+                if (message.filePath && (message.changeBlockId !== undefined || message.changeBlockIndex !== undefined)) {
+                    // executeCommand is async; onDidTrackChanges will trigger update() when done
+                    vscode.commands.executeCommand(
+                        'diffTracker.revertBlock',
+                        message.filePath,
+                        message.changeBlockId ?? message.changeBlockIndex
+                    );
                 }
                 break;
             case 'keepBlock':
-                if (message.filePath && message.changeBlockIndex !== undefined) {
-                    vscode.commands.executeCommand('diffTracker.keepBlock', message.filePath, message.changeBlockIndex);
-                    // Refresh the webview after action
-                    setTimeout(() => this.update(this.filePath), 100);
+                if (message.filePath && (message.changeBlockId !== undefined || message.changeBlockIndex !== undefined)) {
+                    // executeCommand is async; onDidTrackChanges will trigger update() when done
+                    vscode.commands.executeCommand(
+                        'diffTracker.keepBlock',
+                        message.filePath,
+                        message.changeBlockId ?? message.changeBlockIndex
+                    );
                 }
                 break;
             case 'keepAll':
                 if (message.filePath) {
+                    // executeCommand is async; onDidTrackChanges will trigger update() when done
                     vscode.commands.executeCommand('diffTracker.keepAllBlocksInFile', message.filePath);
-                    setTimeout(() => this.update(this.filePath), 100);
                 }
                 break;
             case 'revertAll':
                 if (message.filePath) {
+                    // executeCommand is async; onDidTrackChanges will trigger update() when done
                     vscode.commands.executeCommand('diffTracker.revertAllBlocksInFile', message.filePath);
-                    setTimeout(() => this.update(this.filePath), 100);
                 }
                 break;
             case 'setStyle':
@@ -260,17 +277,23 @@ export class WebviewDiffPanel {
         const originalContent = this.diffTracker.getOriginalContent(this.filePath) || '';
         const trackedChanges = this.diffTracker.getTrackedChanges();
         const fileChange = trackedChanges.find(c => c.filePath === this.filePath);
-        const currentContent = fileChange?.currentContent || originalContent;
+        const currentContent = fileChange?.currentContent ?? originalContent;
         const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
 
         // Get change blocks from diffTracker - this is the source of truth for block indexing
         const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath);
-        const changeBlocksJson = JSON.stringify(changeBlocks.map(b => ({
-            startLine: b.startLine,
-            endLine: b.endLine,
-            type: b.type,
-            blockIndex: b.blockIndex
-        })));
+        const changeBlocksJson = JSON.stringify(changeBlocks.map(b => {
+            const originalRange = this.getOriginalRangeForBlock(b);
+            return {
+                originalStartLine: originalRange.startLine,
+                originalEndLine: originalRange.endLine,
+                blockId: b.blockId,
+                startLine: b.startLine,
+                endLine: b.endLine,
+                type: b.type,
+                blockIndex: b.blockIndex
+            };
+        }));
 
         // Detect language from file extension
         const lang = this.getLangForFileName(fileName);
@@ -487,7 +510,7 @@ export class WebviewDiffPanel {
         };
 
         // Change blocks from diffTracker - source of truth for indexing
-        const changeBlocks = ${changeBlocksJson};
+        let changeBlocks = ${changeBlocksJson};
 
         let currentStyle = 'unified';
         let currentWrap = false;
@@ -502,9 +525,35 @@ export class WebviewDiffPanel {
             return Math.max(1, Math.min(lineNumber, totalLines));
         }
 
-        function getAnnotationLineForBlock(block, totalLines) {
+        function getAnnotationLineForBlock(block, totalLines, hasTrailingEmptyLine, newFileLines) {
+            // Helper to find the last non-empty line starting from a given line
+            function findLastNonEmptyLine(startLine) {
+                for (let i = startLine; i >= 1; i--) {
+                    if (newFileLines[i - 1] && newFileLines[i - 1].trim() !== '') {
+                        return i;
+                    }
+                }
+                // If all lines are empty, return line 1
+                return 1;
+            }
+
+            // Helper to check if a line is empty or non-existent
+            function isEmptyLine(lineNum) {
+                if (lineNum < 1 || lineNum > totalLines) return true;
+                return !newFileLines[lineNum - 1] || newFileLines[lineNum - 1].trim() === '';
+            }
+
             if (block.type !== 'deleted') {
-                return clampLineNumber(block.endLine, totalLines);
+                let targetLine = clampLineNumber(block.endLine, totalLines);
+                
+                // If the block ends at or past EOF, or the target line is empty,
+                // find the last non-empty line to anchor the annotation
+                if (block.endLine >= totalLines || isEmptyLine(targetLine) || (hasTrailingEmptyLine && block.endLine === totalLines)) {
+                    // Always use the last content line for EOF/empty line blocks
+                    targetLine = findLastNonEmptyLine(totalLines);
+                }
+                
+                return clampLineNumber(targetLine, totalLines);
             }
 
             // For deleted blocks, show on the line immediately after the deletion.
@@ -512,9 +561,9 @@ export class WebviewDiffPanel {
             // so shift up by one.
             let targetLine = block.endLine - 1;
 
-            // If deletion is at EOF, place on the second-to-last line.
-            if (targetLine >= totalLines) {
-                targetLine = Math.max(1, totalLines - 1);
+            // If deletion is at EOF or target is empty, place on the last non-empty line
+            if (targetLine >= totalLines || isEmptyLine(targetLine)) {
+                targetLine = findLastNonEmptyLine(totalLines);
             }
 
             return clampLineNumber(targetLine, totalLines);
@@ -523,14 +572,34 @@ export class WebviewDiffPanel {
         // Create annotations based on diffTracker blocks, not diffs.com ChangeContent
         function getBlockAnnotations() {
             const annotations = [];
-            const totalLines = newFile.contents.split('\\n').length;
+            const seenBlockIds = new Set();
+            const newFileLines = newFile.contents.split('\\n');
+            const totalNewLines = newFileLines.length;
+            const hasTrailingEmptyLine = newFileLines[newFileLines.length - 1] === '';
             
             changeBlocks.forEach((block) => {
-                // Use the endLine as the annotation line
+                if (!block || typeof block.blockId !== 'string' || seenBlockIds.has(block.blockId)) {
+                    return;
+                }
+                seenBlockIds.add(block.blockId);
+
+                let side = 'additions';
+                let lineNumber = getAnnotationLineForBlock(block, totalNewLines, hasTrailingEmptyLine, newFileLines);
+
+                if (block.type === 'deleted') {
+                    // Deletion-only hunks should annotate the deletions side, especially when new file is empty.
+                    side = 'deletions';
+                    const endOnOriginal = typeof block.originalEndLine === 'number' && block.originalEndLine > 0
+                        ? block.originalEndLine
+                        : (typeof block.originalStartLine === 'number' && block.originalStartLine > 0 ? block.originalStartLine : 1);
+                    lineNumber = Math.max(1, endOnOriginal);
+                }
+                
                 annotations.push({
-                    side: 'additions',
-                    lineNumber: getAnnotationLineForBlock(block, totalLines),
+                    side: side,
+                    lineNumber: lineNumber,
                     metadata: { 
+                        blockId: block.blockId,
                         blockIndex: block.blockIndex
                     }
                 });
@@ -539,19 +608,60 @@ export class WebviewDiffPanel {
             return annotations;
         }
 
+        function createHunkActionButtons(blockId, blockIndex) {
+            const wrapper = document.createElement('div');
+            wrapper.className = 'hunk-actions';
+            
+            const revertBtn = document.createElement('button');
+            revertBtn.className = 'btn-revert';
+            revertBtn.innerHTML = 'Undo <span class="shortcut">⌘N</span>';
+            revertBtn.title = 'Revert this change (block ' + (blockIndex + 1) + ')';
+            revertBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                vscode.postMessage({ 
+                    command: 'revertBlock', 
+                    filePath: filePath,
+                    changeBlockId: blockId
+                });
+            });
+
+            const keepBtn = document.createElement('button');
+            keepBtn.className = 'btn-keep';
+            keepBtn.innerHTML = 'Keep <span class="shortcut">⌘Y</span>';
+            keepBtn.title = 'Accept this change (block ' + (blockIndex + 1) + ')';
+            keepBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                vscode.postMessage({ 
+                    command: 'keepBlock', 
+                    filePath: filePath,
+                    changeBlockId: blockId
+                });
+            });
+
+            wrapper.appendChild(revertBtn);
+            wrapper.appendChild(keepBtn);
+            return wrapper;
+        }
+
         function renderDiff(style) {
             currentStyle = style;
             container.innerHTML = '';
 
-            if (oldFile.contents === newFile.contents) {
+            // Check for no changes: both content identical AND no change blocks
+            const hasContentDiff = oldFile.contents !== newFile.contents;
+            const hasBlocks = changeBlocks.length > 0;
+            
+            if (!hasContentDiff && !hasBlocks) {
                 container.innerHTML = '<div class="no-changes"><svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7" /></svg><span>No changes detected</span></div>';
                 return;
             }
 
             fileDiffMeta = parseDiffFromFile(oldFile, newFile);
             
-            // Use diffTracker blocks for annotations, not diffs.com ChangeContent
+            // Use diffTracker blocks for annotations
             const blockAnnotations = getBlockAnnotations();
+            
+            const annotationsToRender = blockAnnotations;
 
             fileDiffInstance = new FileDiff({
                 theme: { dark: 'github-dark', light: 'github-light' },
@@ -561,48 +671,17 @@ export class WebviewDiffPanel {
                 lineDiffType: 'word-alt',
                 hunkSeparators: 'line-info',
                 overflow: currentWrap ? 'wrap' : 'scroll',
-                unsafeCSS: '[data-code]{ padding-bottom: calc(1lh + var(--diffs-gap-block, 8px)) !important; } [data-annotation-content]{ overflow: visible !important; }',
+                unsafeCSS: '[data-code]{ padding-bottom: calc(1lh + var(--diffs-gap-block, 8px)) !important; } [data-annotation-content]{ overflow: visible !important; } [data-line]{ position: relative; }',
                 expandUnchanged: currentExpandAll,
                 disableFileHeader: true,
                 renderAnnotation(annotation) {
-                    const wrapper = document.createElement('div');
-                    wrapper.className = 'hunk-actions';
-                    
-                    const revertBtn = document.createElement('button');
-                    revertBtn.className = 'btn-revert';
-                    revertBtn.innerHTML = 'Undo <span class="shortcut">⌘N</span>';
-                    revertBtn.title = 'Revert this change (block ' + annotation.metadata.blockIndex + ')';
-                    revertBtn.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        vscode.postMessage({ 
-                            command: 'revertBlock', 
-                            filePath: filePath,
-                            changeBlockIndex: annotation.metadata.blockIndex
-                        });
-                    });
-
-                    const keepBtn = document.createElement('button');
-                    keepBtn.className = 'btn-keep';
-                    keepBtn.innerHTML = 'Keep <span class="shortcut">⌘Y</span>';
-                    keepBtn.title = 'Accept this change (block ' + annotation.metadata.blockIndex + ')';
-                    keepBtn.addEventListener('click', (e) => {
-                        e.stopPropagation();
-                        vscode.postMessage({ 
-                            command: 'keepBlock', 
-                            filePath: filePath,
-                            changeBlockIndex: annotation.metadata.blockIndex
-                        });
-                    });
-
-                    wrapper.appendChild(revertBtn);
-                    wrapper.appendChild(keepBtn);
-                    return wrapper;
+                    return createHunkActionButtons(annotation.metadata.blockId, annotation.metadata.blockIndex);
                 }
             });
 
             fileDiffInstance.render({
                 fileDiff: fileDiffMeta,
-                lineAnnotations: blockAnnotations,
+                lineAnnotations: annotationsToRender,
                 containerWrapper: container,
             });
 
@@ -657,8 +736,8 @@ export class WebviewDiffPanel {
                 }
                 oldFile.contents = message.oldContents;
                 newFile.contents = message.newContents;
-                changeBlocks.length = 0;
-                message.changeBlocks.forEach(b => changeBlocks.push(b));
+                // Replace array reference atomically to avoid race conditions
+                changeBlocks = message.changeBlocks.slice();
                 if (typeof message.wrap === 'boolean') {
                     currentWrap = message.wrap;
                 }
@@ -683,6 +762,19 @@ export class WebviewDiffPanel {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    private getOriginalRangeForBlock(block: { changes: Array<{ originalLineNumber?: number }> }): { startLine: number; endLine: number } {
+        const lines = block.changes
+            .map(change => change.originalLineNumber)
+            .filter((n): n is number => n !== undefined)
+            .sort((a, b) => a - b);
+
+        if (lines.length === 0) {
+            return { startLine: 0, endLine: 0 };
+        }
+
+        return { startLine: lines[0], endLine: lines[lines.length - 1] };
     }
 
     public dispose(): void {

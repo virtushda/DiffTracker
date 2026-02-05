@@ -1,16 +1,5 @@
 import * as vscode from 'vscode';
-import { DiffTracker, LineChange } from './diffTracker';
-
-/**
- * Represents a block of consecutive changes
- */
-export interface ChangeBlock {
-    startLine: number;      // 1-based, first line of block in current document
-    endLine: number;        // 1-based, last line of block in current document
-    type: 'added' | 'modified' | 'deleted';
-    changes: LineChange[];  // The individual line changes in this block
-    blockIndex: number;     // Index of this block (0-based)
-}
+import { DiffTracker } from './diffTracker';
 
 /**
  * Provides CodeLens actions for change blocks
@@ -49,7 +38,7 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
         }
 
         const filePath = document.uri.fsPath;
-        const blocks = this.getChangeBlocks(filePath);
+        const blocks = this.diffTracker.getChangeBlocks(filePath);
 
         if (blocks.length === 0) {
             return [];
@@ -90,7 +79,7 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
             codeLenses.push(new vscode.CodeLens(range, {
                 title: '↩ Revert',
                 command: 'diffTracker.revertBlock',
-                arguments: [filePath, index],
+                arguments: [filePath, block.blockId],
                 tooltip: 'Revert this block to original content'
             }));
 
@@ -98,7 +87,7 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
             codeLenses.push(new vscode.CodeLens(range, {
                 title: '✓ Keep',
                 command: 'diffTracker.keepBlock',
-                arguments: [filePath, index],
+                arguments: [filePath, block.blockId],
                 tooltip: 'Accept this change and remove from diff'
             }));
 
@@ -112,7 +101,7 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
                     codeLenses.push(new vscode.CodeLens(range, {
                         title: '↑',
                         command: 'diffTracker.goToBlock',
-                        arguments: [filePath, index - 1],
+                        arguments: [filePath, blocks[index - 1].blockId],
                         tooltip: 'Go to previous change block'
                     }));
                 }
@@ -129,7 +118,7 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
                     codeLenses.push(new vscode.CodeLens(range, {
                         title: '↓',
                         command: 'diffTracker.goToBlock',
-                        arguments: [filePath, index + 1],
+                        arguments: [filePath, blocks[index + 1].blockId],
                         tooltip: 'Go to next change block'
                     }));
                 }
@@ -137,68 +126,6 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
         });
 
         return codeLenses;
-    }
-
-    /**
-     * Group consecutive LineChanges into blocks
-     */
-    public getChangeBlocks(filePath: string): ChangeBlock[] {
-        const lineChanges = this.diffTracker.getLineChanges(filePath);
-        if (!lineChanges || lineChanges.length === 0) {
-            return [];
-        }
-
-        // Filter out 'unchanged' type and sort by line number
-        const changes = lineChanges
-            .filter(c => c.type !== 'unchanged')
-            .sort((a, b) => a.lineNumber - b.lineNumber);
-
-        if (changes.length === 0) {
-            return [];
-        }
-
-        const blocks: ChangeBlock[] = [];
-        let currentBlock: LineChange[] = [changes[0]];
-        let currentType = changes[0].type;
-
-        for (let i = 1; i < changes.length; i++) {
-            const change = changes[i];
-            const prevChange = changes[i - 1];
-
-            // Check if this change is consecutive and same type
-            const isConsecutive = change.lineNumber <= prevChange.lineNumber + 1;
-            const isSameType = change.type === currentType;
-
-            if (isConsecutive && isSameType) {
-                currentBlock.push(change);
-            } else {
-                // Save current block and start new one
-                blocks.push(this.createBlock(currentBlock, blocks.length));
-                currentBlock = [change];
-                currentType = change.type;
-            }
-        }
-
-        // Don't forget the last block
-        if (currentBlock.length > 0) {
-            blocks.push(this.createBlock(currentBlock, blocks.length));
-        }
-
-        return blocks;
-    }
-
-    private createBlock(changes: LineChange[], blockIndex: number): ChangeBlock {
-        const startLine = Math.min(...changes.map(c => c.lineNumber));
-        const endLine = Math.max(...changes.map(c => c.lineNumber));
-        const type = changes[0].type as 'added' | 'modified' | 'deleted';
-
-        return {
-            startLine,
-            endLine,
-            type,
-            changes,
-            blockIndex
-        };
     }
 
     public dispose(): void {

@@ -20,6 +20,7 @@ export interface LineChange {
     oldText?: string;  // Original text content (for modified/deleted lines)
     newText?: string;  // New text content (for modified lines)
     anchorLineNumber?: number;  // For deleted lines: the line in current doc where badge should show
+    segmentId?: number; // Internal segment id to keep block grouping stable across EOF edge cases
 }
 
 export type InlineLineType = 'added' | 'deleted' | 'unchanged';
@@ -29,10 +30,25 @@ export interface InlineDiffView {
     lineTypes: InlineLineType[];
 }
 
+export interface ChangeBlock {
+    blockId: string;
+    blockIndex: number;
+    startLine: number;
+    endLine: number;
+    type: 'added' | 'modified' | 'deleted';
+    changes: LineChange[];
+}
+
 interface PendingRemovedLine {
     text: string;
     normalized: string;
     originalLineNumber: number;
+}
+
+interface TextLineModel {
+    lines: string[];
+    hasFinalEol: boolean;
+    dominantEol: '\n' | '\r\n' | '\r';
 }
 
 export class DiffTracker {
@@ -654,10 +670,14 @@ export class DiffTracker {
             return;
         }
 
-        const normalizedOriginal = this.normalizeEol(originalContent);
-        const normalizedCurrent = this.normalizeEol(currentContent);
+        const originalModel = this.toTextLineModel(originalContent);
+        const currentModel = this.toTextLineModel(currentContent);
+        const sameLogicalLines =
+            originalModel.lines.length === currentModel.lines.length &&
+            originalModel.lines.every((line, index) => line === currentModel.lines[index]);
 
-        if (normalizedOriginal === normalizedCurrent) {
+        // Ignore pure EOL-style / final-EOL toggles and track only logical line changes.
+        if (sameLogicalLines) {
             this.trackedChanges.delete(filePath);
             this.lineChanges.delete(filePath);
             this.inlineViews.delete(filePath);
@@ -665,6 +685,14 @@ export class DiffTracker {
             return;
         }
 
+        const normalizedOriginal = this.serializeTextModel(
+            { ...originalModel, dominantEol: '\n' },
+            '\n'
+        );
+        const normalizedCurrent = this.serializeTextModel(
+            { ...currentModel, dominantEol: '\n' },
+            '\n'
+        );
         const changes = Diff.diffLines(normalizedOriginal, normalizedCurrent);
         const fileName = filePath.split('/').pop() || filePath;
 
@@ -782,75 +810,65 @@ export class DiffTracker {
     }
 
     public buildInlineViewFromContents(originalContent: string, currentContent: string): InlineDiffView {
-        return this.buildDiffViewFromLines(
-            originalContent.split('\n'),
-            currentContent.split('\n')
+        return this.buildDiffViewFromContents(
+            originalContent,
+            currentContent
         ).inlineView;
     }
 
     /**
      * Revert a specific change block to its original content
      */
-    public async revertBlock(filePath: string, blockIndex: number): Promise<boolean> {
-        const lineChanges = this.lineChanges.get(filePath);
+    public async revertBlock(filePath: string, blockRef: string | number): Promise<boolean> {
         const originalContent = this.fileSnapshots.get(filePath);
 
-        if (!lineChanges || originalContent === undefined) {
+        if (originalContent === undefined) {
             return false;
         }
 
-        // Get the blocks
-        const blocks = this.getChangeBlocks(filePath);
-        if (blockIndex < 0 || blockIndex >= blocks.length) {
+        const block = this.resolveBlock(filePath, blockRef);
+        if (!block) {
             return false;
         }
-
-        const block = blocks[blockIndex];
-        const originalLines = originalContent.split('\n');
 
         try {
             const uri = vscode.Uri.file(filePath);
             const doc = await vscode.workspace.openTextDocument(uri);
-            const edit = new vscode.WorkspaceEdit();
+            const currentModel = this.toTextLineModel(doc.getText());
+            const originalModel = this.toTextLineModel(originalContent);
+            const nextLines = [...currentModel.lines];
+            const startIdx = Math.max(0, block.startLine - 1);
+            const deleteCount = Math.max(0, block.endLine - block.startLine + 1);
 
             if (block.type === 'added') {
-                // Delete the added lines
-                const startLine = block.startLine - 1;
-                const endLine = block.endLine;
-                const range = new vscode.Range(startLine, 0, endLine, 0);
-                edit.delete(uri, range);
+                nextLines.splice(startIdx, deleteCount);
             } else if (block.type === 'modified') {
-                // Replace with original content
-                const startLine = block.startLine - 1;
-                const endLine = block.endLine - 1;
-                const range = new vscode.Range(
-                    startLine, 0,
-                    endLine, doc.lineAt(endLine).text.length
-                );
-
-                // Get original lines for this block
-                const originalBlockLines: string[] = [];
-                block.changes.forEach(change => {
-                    if (change.oldText !== undefined) {
-                        originalBlockLines.push(change.oldText);
-                    }
-                });
-
-                edit.replace(uri, range, originalBlockLines.join('\n'));
+                const originalBlockLines = this.getOrderedOriginalLines(block);
+                nextLines.splice(startIdx, deleteCount, ...originalBlockLines);
             } else if (block.type === 'deleted') {
-                // Insert the deleted lines back
-                const insertLine = block.startLine - 1;
-                const position = new vscode.Position(insertLine, 0);
-
-                const deletedLines: string[] = [];
-                block.changes.forEach(change => {
-                    if (change.oldText !== undefined) {
-                        deletedLines.push(change.oldText);
-                    }
-                });
-
-                edit.insert(uri, position, deletedLines.join('\n') + '\n');
+                const deletedLines = this.getOrderedOriginalLines(block);
+                nextLines.splice(startIdx, 0, ...deletedLines);
             }
+
+            const nextHasFinalEol = this.blockTouchesEof(block, currentModel.lines.length, originalModel.lines.length)
+                ? originalModel.hasFinalEol
+                : currentModel.hasFinalEol;
+            const nextText = this.serializeTextModel(
+                {
+                    lines: nextLines,
+                    hasFinalEol: nextHasFinalEol,
+                    dominantEol: currentModel.dominantEol
+                },
+                currentModel.dominantEol
+            );
+
+            if (nextText === doc.getText()) {
+                return true;
+            }
+
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = this.getFullDocumentRange(doc);
+            edit.replace(uri, fullRange, nextText);
 
             const success = await vscode.workspace.applyEdit(edit);
             return success;
@@ -862,71 +880,74 @@ export class DiffTracker {
 
     /**
      * Keep a specific change block (accept the changes)
-     * This surgically updates the snapshot to include only this block's changes
+     * Updates the snapshot so this block's changes become the new baseline
      */
-    public async keepBlock(filePath: string, blockIndex: number): Promise<boolean> {
-        const blocks = this.getChangeBlocks(filePath);
-        if (blockIndex < 0 || blockIndex >= blocks.length) {
+    public async keepBlock(filePath: string, blockRef: string | number): Promise<boolean> {
+        const block = this.resolveBlock(filePath, blockRef);
+        if (!block) {
             return false;
         }
-
-        const block = blocks[blockIndex];
         const originalContent = this.fileSnapshots.get(filePath);
-        const tracked = this.trackedChanges.get(filePath);
         const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === filePath);
-        const currentText = doc?.getText() ?? tracked?.currentContent;
+        const currentText = doc?.getText() ?? this.trackedChanges.get(filePath)?.currentContent;
 
         if (originalContent === undefined || currentText === undefined) {
             return false;
         }
 
-        const originalLines = originalContent.split('\n');
-        const currentLines = currentText.split('\n');
+        const originalModel = this.toTextLineModel(originalContent);
+        const currentModel = this.toTextLineModel(currentText);
+        const originalLines = [...originalModel.lines];
+        const currentLines = currentModel.lines;
 
-        // Surgically update the snapshot based on block type
-        if (block.type === 'added') {
-            // For added lines: insert the new lines into the snapshot
-            // The added lines in current doc at block.startLine-1 to block.endLine-1
-            // should be inserted into snapshot
-            const insertPosition = this.findInsertPosition(block, blocks, originalLines.length);
-            const addedLines = currentLines.slice(block.startLine - 1, block.endLine);
-            originalLines.splice(insertPosition, 0, ...addedLines);
-        } else if (block.type === 'modified') {
-            // For modified lines: replace original lines with current lines
-            block.changes.forEach(change => {
-                if (change.originalLineNumber !== undefined && change.originalLineNumber >= 1) {
-                    const origIdx = change.originalLineNumber - 1;
-                    if (origIdx < originalLines.length) {
-                        // Get the current line content
-                        const currentIdx = change.lineNumber - 1;
-                        if (currentIdx < currentLines.length) {
-                            originalLines[origIdx] = currentLines[currentIdx];
-                        }
-                    }
-                }
-            });
-        } else if (block.type === 'deleted') {
-            // For deleted lines: remove them from snapshot (they're already gone from current)
-            // Collect original line numbers to remove (in reverse order to maintain indices)
-            const origLinesToRemove = block.changes
-                .map(c => c.originalLineNumber)
-                .filter((n): n is number => n !== undefined)
-                .sort((a, b) => b - a); // Sort descending
+        // Get current file's lines for this block (what we want to keep)
+        const currentBlockLines = currentLines.slice(block.startLine - 1, block.endLine);
 
-            origLinesToRemove.forEach(origLineNum => {
+        // Find original line numbers affected by this block
+        const originalLineNumbers = block.changes
+            .map(c => c.originalLineNumber)
+            .filter((n): n is number => n !== undefined);
+
+        if (block.type === 'deleted') {
+            // Deleted block: remove lines from original (they don't exist in current)
+            // Sort descending to avoid index shifting issues
+            const sortedDesc = [...new Set(originalLineNumbers)].sort((a, b) => b - a);
+            for (const origLineNum of sortedDesc) {
                 const idx = origLineNum - 1;
                 if (idx >= 0 && idx < originalLines.length) {
                     originalLines.splice(idx, 1);
                 }
-            });
+            }
+        } else if (originalLineNumbers.length > 0) {
+            // Modified or mixed block: replace original lines with current block lines
+            const minOrig = Math.min(...originalLineNumbers);
+            const maxOrig = Math.max(...originalLineNumbers);
+            const origStartIdx = minOrig - 1;
+            const deleteCount = maxOrig - minOrig + 1;
+            originalLines.splice(origStartIdx, deleteCount, ...currentBlockLines);
+        } else {
+            // Pure addition (no original lines): insert at block position
+            // Find the closest preceding unchanged line to determine insert position
+            const insertIdx = Math.max(0, block.startLine - 1);
+            originalLines.splice(insertIdx, 0, ...currentBlockLines);
         }
 
-        // Update the snapshot with the modified original
-        this.fileSnapshots.set(filePath, originalLines.join('\n'));
+        // Update snapshot using current editor newline style while keeping logical accepted content.
+        const keepHasFinalEol = this.blockTouchesEof(block, currentModel.lines.length, originalModel.lines.length)
+            ? currentModel.hasFinalEol
+            : originalModel.hasFinalEol;
+        const newSnapshot = this.serializeTextModel(
+            {
+                lines: originalLines,
+                hasFinalEol: keepHasFinalEol,
+                dominantEol: currentModel.dominantEol
+            },
+            currentModel.dominantEol
+        );
+        this.fileSnapshots.set(filePath, newSnapshot);
 
-        // Recompute tracked diff against the updated snapshot
+        // Recompute diff against updated snapshot
         this.updateTrackedDiff(filePath, currentText);
-
         return true;
     }
 
@@ -988,78 +1009,98 @@ export class DiffTracker {
     /**
      * Get change blocks for a file (used by CodeLens)
      */
-    public getChangeBlocks(filePath: string): Array<{
-        startLine: number;
-        endLine: number;
-        type: 'added' | 'modified' | 'deleted';
-        changes: LineChange[];
-        blockIndex: number;
-    }> {
+    public getChangeBlocks(filePath: string): ChangeBlock[] {
         const lineChanges = this.lineChanges.get(filePath);
         if (!lineChanges || lineChanges.length === 0) {
             return [];
         }
 
-        // Filter out 'unchanged' type and sort by line number
+        // Keep original order from diff computation; sorting by line number can break EOF deletions.
         const changes = lineChanges
-            .filter(c => c.type !== 'unchanged')
-            .sort((a, b) => a.lineNumber - b.lineNumber);
+            .filter(c => c.type !== 'unchanged');
 
         if (changes.length === 0) {
             return [];
         }
 
-        const blocks: Array<{
-            startLine: number;
-            endLine: number;
-            type: 'added' | 'modified' | 'deleted';
-            changes: LineChange[];
-            blockIndex: number;
-        }> = [];
+        const shouldMerge = (prev: LineChange, next: LineChange): boolean => {
+            const prevSegment = prev.segmentId;
+            const nextSegment = next.segmentId;
+            if (prevSegment !== undefined && nextSegment !== undefined) {
+                return prevSegment === nextSegment;
+            }
+            if (prevSegment !== undefined || nextSegment !== undefined) {
+                return false;
+            }
+            return next.lineNumber <= prev.lineNumber + 1;
+        };
 
-        let currentBlock: LineChange[] = [changes[0]];
-        let currentType = changes[0].type;
+        const groupedChanges: LineChange[][] = [];
+        let currentGroup: LineChange[] = [];
+        for (const change of changes) {
+            if (currentGroup.length === 0) {
+                currentGroup = [change];
+                continue;
+            }
 
-        for (let i = 1; i < changes.length; i++) {
-            const change = changes[i];
-            const prevChange = changes[i - 1];
-
-            // Check if this change is consecutive and same type
-            const isConsecutive = change.lineNumber <= prevChange.lineNumber + 1;
-            const isSameType = change.type === currentType;
-
-            if (isConsecutive && isSameType) {
-                currentBlock.push(change);
+            const prev = currentGroup[currentGroup.length - 1];
+            if (shouldMerge(prev, change)) {
+                currentGroup.push(change);
             } else {
-                // Save current block and start new one
-                const startLine = Math.min(...currentBlock.map(c => c.lineNumber));
-                const endLine = Math.max(...currentBlock.map(c => c.lineNumber));
-                blocks.push({
-                    startLine,
-                    endLine,
-                    type: currentType as 'added' | 'modified' | 'deleted',
-                    changes: currentBlock,
-                    blockIndex: blocks.length
-                });
-                currentBlock = [change];
-                currentType = change.type;
+                groupedChanges.push(currentGroup);
+                currentGroup = [change];
             }
         }
 
-        // Don't forget the last block
-        if (currentBlock.length > 0) {
-            const startLine = Math.min(...currentBlock.map(c => c.lineNumber));
-            const endLine = Math.max(...currentBlock.map(c => c.lineNumber));
-            blocks.push({
-                startLine,
-                endLine,
-                type: currentType as 'added' | 'modified' | 'deleted',
-                changes: currentBlock,
-                blockIndex: blocks.length
-            });
+        if (currentGroup.length > 0) {
+            groupedChanges.push(currentGroup);
         }
 
-        return blocks;
+        const idCounter = new Map<string, number>();
+        return groupedChanges.map((group, index) => {
+            const startLine = Math.min(...group.map(change => change.lineNumber));
+            const endLine = Math.max(...group.map(change => change.lineNumber));
+
+            const hasAdded = group.some(change => change.type === 'added');
+            const hasDeleted = group.some(change => change.type === 'deleted');
+            const hasModified = group.some(change => change.type === 'modified');
+            const type: 'added' | 'modified' | 'deleted' =
+                hasModified || (hasAdded && hasDeleted)
+                    ? 'modified'
+                    : (hasDeleted ? 'deleted' : 'added');
+
+            const originalLineNumbers = group
+                .map(change => change.originalLineNumber)
+                .filter((n): n is number => n !== undefined)
+                .sort((a, b) => a - b);
+            const originalStart = originalLineNumbers.length > 0 ? originalLineNumbers[0] : 0;
+            const originalEnd = originalLineNumbers.length > 0 ? originalLineNumbers[originalLineNumbers.length - 1] : 0;
+            const segmentKey = group.find(change => change.segmentId !== undefined)?.segmentId ?? 0;
+            const key = `${type}:${startLine}:${endLine}:${originalStart}:${originalEnd}:${segmentKey}`;
+            const seen = idCounter.get(key) ?? 0;
+            idCounter.set(key, seen + 1);
+
+            return {
+                startLine,
+                endLine,
+                type,
+                changes: group,
+                blockId: `${filePath}::${key}:${seen + 1}`,
+                blockIndex: index
+            };
+        });
+    }
+
+    private resolveBlock(filePath: string, blockRef: string | number): ChangeBlock | undefined {
+        const blocks = this.getChangeBlocks(filePath);
+        if (typeof blockRef === 'number') {
+            if (blockRef < 0 || blockRef >= blocks.length) {
+                return undefined;
+            }
+            return blocks[blockRef];
+        }
+
+        return blocks.find(block => block.blockId === blockRef);
     }
 
     private onDocumentChanged(event: vscode.TextDocumentChangeEvent) {
@@ -1173,46 +1214,36 @@ export class DiffTracker {
             return undefined;
         }
 
+        return this.buildDiffViewFromContents(originalContent, currentContent);
+    }
+
+    private buildDiffViewFromContents(
+        originalContent: string,
+        currentContent: string
+    ): { lineChanges: LineChange[]; inlineView: InlineDiffView } {
+        const originalModel = this.toTextLineModel(originalContent);
+        const currentModel = this.toTextLineModel(currentContent);
+
         return this.buildDiffViewFromLines(
-            originalContent.split('\n'),
-            currentContent.split('\n')
+            originalModel.lines,
+            currentModel.lines,
+            originalModel.hasFinalEol,
+            currentModel.hasFinalEol
         );
     }
 
     private buildDiffViewFromLines(
         originalLines: string[],
-        currentLines: string[]
+        currentLines: string[],
+        originalHasFinalEol: boolean,
+        currentHasFinalEol: boolean
     ): { lineChanges: LineChange[]; inlineView: InlineDiffView } {
         const originalComparable = originalLines.map(line => this.normalizeLineForComparison(line));
         const currentComparable = currentLines.map(line => this.normalizeLineForComparison(line));
         const originalNormalized = originalLines.map(line => this.normalizeLineForMatch(line));
         const currentNormalized = currentLines.map(line => this.normalizeLineForMatch(line));
 
-        // Use the mature diff library instead of our custom patienceDiff
-        const originalText = originalComparable.join('\n');
-        const currentText = currentComparable.join('\n');
-        const diffResult = Diff.diffLines(originalText, currentText);
-
-        // Convert diff library format to our arrayDiff format
-        // diff library: { count, value: string, added?, removed? }
-        // Our format: { value: string[], added?, removed? }
-        const arrayDiff: Array<{ value: string[]; added?: boolean; removed?: boolean }> = [];
-        for (const change of diffResult) {
-            // Split value by newlines, handling the trailing newline
-            let lines = change.value.split('\n');
-            // Remove empty string at the end if the value ended with \n
-            if (lines.length > 0 && lines[lines.length - 1] === '') {
-                lines = lines.slice(0, -1);
-            }
-            if (lines.length > 0) {
-                arrayDiff.push({
-                    value: lines,
-                    added: change.added,
-                    removed: change.removed
-                });
-            }
-        }
-
+        const diffResult = Diff.diffArrays(originalComparable, currentComparable);
         const lineChanges: LineChange[] = [];
         const inlineLines: string[] = [];
         const inlineTypes: InlineLineType[] = [];
@@ -1221,27 +1252,36 @@ export class DiffTracker {
         let currentIndex = 0;
         let originalLineNumber = 1;
         let currentLineNumber = 1;
+        let lastMatchedCurrentLine = 0;
+        let nextSegmentId = 1;
+        let activeSegmentId: number | undefined;
 
         const pendingRemoved: PendingRemovedLine[] = [];
-
-        // Track the last matched line number in current doc (for anchoring deleted badges)
-        let lastMatchedCurrentLine = 0;
+        const beginSegment = (): number => {
+            if (activeSegmentId === undefined) {
+                activeSegmentId = nextSegmentId++;
+            }
+            return activeSegmentId;
+        };
+        const closeSegment = (): void => {
+            activeSegmentId = undefined;
+        };
 
         const flushPendingRemoved = () => {
             if (pendingRemoved.length === 0) {
                 return;
             }
 
-            // All pending deleted lines share the same anchor: the last matched line
+            const segmentId = beginSegment();
             const anchorLine = lastMatchedCurrentLine;
-
             pendingRemoved.forEach(removed => {
                 lineChanges.push({
                     lineNumber: currentLineNumber,
                     type: 'deleted',
                     originalLineNumber: removed.originalLineNumber,
                     oldText: removed.text,
-                    anchorLineNumber: anchorLine
+                    anchorLineNumber: anchorLine,
+                    segmentId
                 });
                 inlineLines.push(removed.text);
                 inlineTypes.push('deleted');
@@ -1250,47 +1290,53 @@ export class DiffTracker {
             pendingRemoved.length = 0;
         };
 
-        arrayDiff.forEach(change => {
+        for (const change of diffResult) {
             const length = change.value.length;
+            if (length === 0) {
+                continue;
+            }
 
             if (change.removed) {
                 for (let i = 0; i < length; i++) {
+                    const oldLine = originalLines[originalIndex] ?? '';
                     pendingRemoved.push({
-                        text: originalLines[originalIndex],
-                        normalized: originalNormalized[originalIndex],
+                        text: oldLine,
+                        normalized: originalNormalized[originalIndex] ?? this.normalizeLineForMatch(oldLine),
                         originalLineNumber
                     });
                     originalIndex++;
                     originalLineNumber++;
                 }
-                return;
+                continue;
             }
 
             if (change.added) {
+                const segmentId = beginSegment();
                 const addedLines = currentLines.slice(currentIndex, currentIndex + length);
                 const addedNormalized = currentNormalized.slice(currentIndex, currentIndex + length);
                 const pairing = this.pairLinesBySimilarity(pendingRemoved, addedLines, addedNormalized);
 
                 pairing.pairedByAdded.forEach((deletedIndex, addedIndex) => {
                     const deleted = pendingRemoved[deletedIndex];
+                    const nextLine = addedLines[addedIndex] ?? '';
                     lineChanges.push({
                         lineNumber: currentLineNumber + addedIndex,
                         type: 'modified',
                         originalLineNumber: deleted.originalLineNumber,
                         oldText: deleted.text,
-                        newText: addedLines[addedIndex]
+                        newText: nextLine,
+                        segmentId
                     });
                 });
 
                 const canSuppressBlankDeletes =
                     pendingRemoved.length > 0 &&
-                    pendingRemoved.every(removed => removed.text.trim().length === 0) &&
+                    pendingRemoved.every(removed => (removed.text ?? '').trim().length === 0) &&
                     pendingRemoved.length === addedLines.length;
 
                 pairing.unpairedDeleted.forEach(index => {
                     const deleted = pendingRemoved[index];
-                    const isBlankDeleted = deleted.text.trim().length === 0;
-
+                    const isBlankDeleted = (deleted?.text ?? '').trim().length === 0;
                     if (canSuppressBlankDeletes && isBlankDeleted) {
                         return;
                     }
@@ -1300,21 +1346,23 @@ export class DiffTracker {
                         type: 'deleted',
                         originalLineNumber: deleted.originalLineNumber,
                         oldText: deleted.text,
-                        anchorLineNumber: lastMatchedCurrentLine
+                        anchorLineNumber: lastMatchedCurrentLine,
+                        segmentId
                     });
                 });
 
                 pairing.unpairedAdded.forEach(index => {
+                    const addedLine = addedLines[index] ?? '';
                     lineChanges.push({
                         lineNumber: currentLineNumber + index,
                         type: 'added',
-                        originalLineNumber,
-                        newText: addedLines[index]
+                        newText: addedLine,
+                        segmentId
                     });
                 });
 
                 const inlineDeleted = canSuppressBlankDeletes
-                    ? pendingRemoved.filter(removed => removed.text.trim().length !== 0)
+                    ? pendingRemoved.filter(removed => (removed.text ?? '').trim().length !== 0)
                     : pendingRemoved;
 
                 inlineDeleted.forEach(removed => {
@@ -1323,82 +1371,54 @@ export class DiffTracker {
                 });
 
                 addedLines.forEach(line => {
-                    inlineLines.push(line);
+                    inlineLines.push(line ?? '');
                     inlineTypes.push('added');
                 });
 
                 pendingRemoved.length = 0;
                 currentIndex += length;
                 currentLineNumber += length;
-                return;
+                continue;
             }
 
             flushPendingRemoved();
+            closeSegment();
 
-            let offset = 0;
-            while (offset < length) {
-                const oldLine = originalLines[originalIndex];
-                const newLine = currentLines[currentIndex];
-                const oldComparable = originalComparable[originalIndex];
-                const newComparable = currentComparable[currentIndex];
-
-                if (oldComparable === newComparable) {
-                    inlineLines.push(newLine);
-                    inlineTypes.push('unchanged');
-                    // Record unchanged line for anchor mapping (used by decorationManager)
-                    lineChanges.push({
-                        lineNumber: currentLineNumber,
-                        type: 'unchanged' as const,
-                        originalLineNumber
-                    });
-                    originalIndex++;
-                    currentIndex++;
-                    originalLineNumber++;
-                    lastMatchedCurrentLine = currentLineNumber;  // Track last matched line
-                    currentLineNumber++;
-                    offset++;
-                    continue;
-                }
-
-                let runLength = 0;
-                while (offset + runLength < length) {
-                    const oldCandidate = originalComparable[originalIndex + runLength];
-                    const newCandidate = currentComparable[currentIndex + runLength];
-                    if (oldCandidate === newCandidate) {
-                        break;
-                    }
-                    runLength++;
-                }
-
-                for (let i = 0; i < runLength; i++) {
-                    inlineLines.push(originalLines[originalIndex + i]);
-                    inlineTypes.push('deleted');
-                }
-
-                for (let i = 0; i < runLength; i++) {
-                    inlineLines.push(currentLines[currentIndex + i]);
-                    inlineTypes.push('added');
-                }
-
-                for (let i = 0; i < runLength; i++) {
-                    lineChanges.push({
-                        lineNumber: currentLineNumber + i,
-                        type: 'modified',
-                        originalLineNumber: originalLineNumber + i,
-                        oldText: originalLines[originalIndex + i],
-                        newText: currentLines[currentIndex + i]
-                    });
-                }
-
-                originalIndex += runLength;
-                currentIndex += runLength;
-                originalLineNumber += runLength;
-                currentLineNumber += runLength;
-                offset += runLength;
+            for (let i = 0; i < length; i++) {
+                const newLine = currentLines[currentIndex] ?? '';
+                inlineLines.push(newLine);
+                inlineTypes.push('unchanged');
+                lineChanges.push({
+                    lineNumber: currentLineNumber,
+                    type: 'unchanged',
+                    originalLineNumber
+                });
+                originalIndex++;
+                currentIndex++;
+                originalLineNumber++;
+                lastMatchedCurrentLine = currentLineNumber;
+                currentLineNumber++;
             }
-        });
+        }
 
         flushPendingRemoved();
+        closeSegment();
+
+        // Track metadata so final-EOL-only edits do not create phantom blocks.
+        if (originalHasFinalEol !== currentHasFinalEol && lineChanges.every(change => change.type === 'unchanged')) {
+            lineChanges.length = 0;
+            inlineLines.length = 0;
+            inlineTypes.length = 0;
+            for (let i = 0; i < currentLines.length; i++) {
+                inlineLines.push(currentLines[i] ?? '');
+                inlineTypes.push('unchanged');
+                lineChanges.push({
+                    lineNumber: i + 1,
+                    type: 'unchanged',
+                    originalLineNumber: i + 1
+                });
+            }
+        }
 
         return {
             lineChanges,
@@ -1418,60 +1438,60 @@ export class DiffTracker {
         unpairedDeleted: number[],
         unpairedAdded: number[]
     } {
-        const similarityThreshold = 0.6;
-        const maxOffset = 5;
         const pairedByAdded = new Map<number, number>();
         const usedDeleted = new Set<number>();
         const usedAdded = new Set<number>();
 
-        // First pass: pair same-position lines (regardless of similarity)
-        // This handles the common case of editing a single line in place
+        // Always pair by position first (up to the minimum count).
+        // This treats adjacent deleted+added as "modified" rather than separate operations,
+        // which matches user expectations for edits like "# TBD" -> "# TBD123".
         const minLen = Math.min(deletedLines.length, addedLines.length);
         for (let i = 0; i < minLen; i++) {
-            // Only auto-pair if both sides have exactly one line at this position
-            // that would otherwise be unpaired
-            if (deletedLines.length === addedLines.length) {
-                // Same number of lines changed - pair by position
-                pairedByAdded.set(i, i);
-                usedDeleted.add(i);
+            pairedByAdded.set(i, i);
+            usedDeleted.add(i);
+            usedAdded.add(i);
+        }
+
+        // If counts differ, try to pair remaining lines by similarity to keep modified hunks compact.
+        const similarityThreshold = 0.3;
+        const maxOffset = 5;
+        for (let i = 0; i < addedLines.length; i++) {
+            if (usedAdded.has(i)) {
+                continue;
+            }
+
+            let bestDeleted = -1;
+            let bestSimilarity = 0;
+
+            for (let j = 0; j < deletedLines.length; j++) {
+                if (usedDeleted.has(j)) {
+                    continue;
+                }
+
+                if (Math.abs(j - i) > maxOffset) {
+                    continue;
+                }
+
+                const similarity = this.calculatePairSimilarity(
+                    deletedLines[j],
+                    addedLines[i],
+                    addedNormalized[i]
+                );
+
+                if (similarity > bestSimilarity) {
+                    bestSimilarity = similarity;
+                    bestDeleted = j;
+                }
+            }
+
+            if (bestDeleted >= 0 && bestSimilarity >= similarityThreshold) {
+                pairedByAdded.set(i, bestDeleted);
+                usedDeleted.add(bestDeleted);
                 usedAdded.add(i);
             }
         }
 
-        // If counts differ, fall back to similarity-based pairing
-        if (deletedLines.length !== addedLines.length) {
-            for (let i = 0; i < addedLines.length; i++) {
-                let bestDeleted = -1;
-                let bestSimilarity = 0;
-
-                for (let j = 0; j < deletedLines.length; j++) {
-                    if (usedDeleted.has(j)) {
-                        continue;
-                    }
-
-                    if (Math.abs(j - i) > maxOffset) {
-                        continue;
-                    }
-
-                    const similarity = this.calculatePairSimilarity(
-                        deletedLines[j],
-                        addedLines[i],
-                        addedNormalized[i]
-                    );
-
-                    if (similarity > bestSimilarity) {
-                        bestSimilarity = similarity;
-                        bestDeleted = j;
-                    }
-                }
-
-                if (bestDeleted >= 0 && bestSimilarity >= similarityThreshold) {
-                    pairedByAdded.set(i, bestDeleted);
-                    usedDeleted.add(bestDeleted);
-                    usedAdded.add(i);
-                }
-            }
-        }
+        // Remaining unpaired lines stay as pure deleted or pure added
 
         const unpairedDeleted = deletedLines
             .map((_, index) => index)
@@ -1499,9 +1519,9 @@ export class DiffTracker {
         return Math.max(rawSimilarity, normalizedSimilarity);
     }
 
-    private calculateSetSimilarity(str1: string, str2: string): number {
-        const cleaned1 = str1.trim().replace(/\s+/g, '');
-        const cleaned2 = str2.trim().replace(/\s+/g, '');
+    private calculateSetSimilarity(str1: string | undefined, str2: string | undefined): number {
+        const cleaned1 = (str1 ?? '').trim().replace(/\s+/g, '');
+        const cleaned2 = (str2 ?? '').trim().replace(/\s+/g, '');
 
         if (!cleaned1 && !cleaned2) {
             return 1;
@@ -1514,6 +1534,99 @@ export class DiffTracker {
         const union = new Set([...set1, ...set2]);
 
         return union.size > 0 ? intersection.size / union.size : 0;
+    }
+
+    private detectDominantEol(content: string): '\n' | '\r\n' | '\r' {
+        const matches = content.match(/\r\n|\r|\n/g);
+        if (!matches || matches.length === 0) {
+            return '\n';
+        }
+
+        let lf = 0;
+        let crlf = 0;
+        let cr = 0;
+        for (const token of matches) {
+            if (token === '\r\n') {
+                crlf++;
+            } else if (token === '\r') {
+                cr++;
+            } else {
+                lf++;
+            }
+        }
+
+        if (crlf >= lf && crlf >= cr) {
+            return '\r\n';
+        }
+        if (lf >= cr) {
+            return '\n';
+        }
+        return '\r';
+    }
+
+    private normalizeEol(content: string): string {
+        return content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    }
+
+    private toTextLineModel(content: string): TextLineModel {
+        const dominantEol = this.detectDominantEol(content);
+        const normalized = this.normalizeEol(content);
+        if (normalized.length === 0) {
+            return { lines: [], hasFinalEol: false, dominantEol };
+        }
+
+        const hasFinalEol = normalized.endsWith('\n');
+        const split = normalized.split('\n');
+        const lines = hasFinalEol ? split.slice(0, -1) : split;
+        return { lines, hasFinalEol, dominantEol };
+    }
+
+    private serializeTextModel(model: TextLineModel, preferredEol?: '\n' | '\r\n' | '\r'): string {
+        const eol = preferredEol ?? model.dominantEol;
+        let value = model.lines.join(eol);
+        if (model.hasFinalEol) {
+            value += eol;
+        }
+        return value;
+    }
+
+    private getOrderedOriginalLines(block: ChangeBlock): string[] {
+        const byOriginalLine = new Map<number, string>();
+        for (const change of block.changes) {
+            if (change.originalLineNumber === undefined || change.oldText === undefined) {
+                continue;
+            }
+            if (!byOriginalLine.has(change.originalLineNumber)) {
+                byOriginalLine.set(change.originalLineNumber, change.oldText);
+            }
+        }
+
+        if (byOriginalLine.size > 0) {
+            return [...byOriginalLine.entries()]
+                .sort((a, b) => a[0] - b[0])
+                .map((entry) => entry[1]);
+        }
+
+        const fallback: string[] = [];
+        for (const change of block.changes) {
+            if (change.oldText !== undefined) {
+                fallback.push(change.oldText);
+            }
+        }
+        return fallback;
+    }
+
+    private blockTouchesEof(
+        block: ChangeBlock,
+        currentLineCount: number,
+        originalLineCount: number
+    ): boolean {
+        const touchesCurrent = currentLineCount === 0 || block.endLine >= currentLineCount;
+        const maxOriginal = block.changes
+            .map(change => change.originalLineNumber ?? 0)
+            .reduce((max, value) => Math.max(max, value), 0);
+        const touchesOriginal = maxOriginal > 0 && maxOriginal >= originalLineCount;
+        return touchesCurrent || touchesOriginal;
     }
 
     private getFullDocumentRange(doc: vscode.TextDocument): vscode.Range {
@@ -1884,8 +1997,8 @@ export class DiffTracker {
         return result;
     }
 
-    private normalizeLineForMatch(input: string): string {
-        let value = input.trim();
+    private normalizeLineForMatch(input: string | undefined): string {
+        let value = (input ?? '').trim();
 
         value = value.replace(/^\/\/\s?/, '');
         value = value.replace(/^#\s?/, '');
@@ -1897,12 +2010,8 @@ export class DiffTracker {
         return value.trim();
     }
 
-    private normalizeEol(input: string): string {
-        return input.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-    }
-
-    private normalizeLineForComparison(input: string): string {
-        return input.replace(/\r$/, '');
+    private normalizeLineForComparison(input: string | undefined): string {
+        return (input ?? '').replace(/\r$/, '');
     }
 
     public dispose() {

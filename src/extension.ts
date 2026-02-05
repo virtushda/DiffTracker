@@ -10,6 +10,7 @@ import { DiffCodeLensProvider } from './codeLensProvider';
 import { SettingsTreeDataProvider } from './settingsTreeView';
 import { WebviewDiffPanel } from './webviewDiffPanel';
 import { WatchExcludePanel } from './watchExcludePanel';
+import { createInlineDiffUri } from './utils/inlineDiffUri';
 
 let diffTracker: DiffTracker;
 let decorationManager: DecorationManager;
@@ -126,11 +127,7 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            // Create URI with (Diff) prefix in filename for clear tab identification
-            const fileName = filePath.split('/').pop() || 'file';
-            const dirPath = filePath.substring(0, filePath.length - fileName.length);
-            const diffPath = `${dirPath}(Diff) ${fileName}`;
-            const inlineUri = vscode.Uri.file(diffPath).with({ scheme: 'diff-tracker-inline' });
+            const inlineUri = createInlineDiffUri(filePath);
             const doc = await vscode.workspace.openTextDocument(inlineUri);
             const editor = await vscode.window.showTextDocument(doc);
             decorationManager.updateDecorations(editor);
@@ -265,8 +262,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Block-wise revert command
     context.subscriptions.push(
-        vscode.commands.registerCommand('diffTracker.revertBlock', async (filePath: string, blockIndex: number) => {
-            const success = await diffTracker.revertBlock(filePath, blockIndex);
+        vscode.commands.registerCommand('diffTracker.revertBlock', async (filePath: string, blockRef: string | number) => {
+            const success = await diffTracker.revertBlock(filePath, blockRef);
             if (success) {
                 codeLensProvider.refresh();
                 treeDataProvider.refresh();
@@ -276,8 +273,8 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Block-wise keep command
     context.subscriptions.push(
-        vscode.commands.registerCommand('diffTracker.keepBlock', async (filePath: string, blockIndex: number) => {
-            const success = await diffTracker.keepBlock(filePath, blockIndex);
+        vscode.commands.registerCommand('diffTracker.keepBlock', async (filePath: string, blockRef: string | number) => {
+            const success = await diffTracker.keepBlock(filePath, blockRef);
             if (success) {
                 codeLensProvider.refresh();
                 treeDataProvider.refresh();
@@ -287,18 +284,32 @@ export function activate(context: vscode.ExtensionContext) {
 
     // Navigate to block
     context.subscriptions.push(
-        vscode.commands.registerCommand('diffTracker.goToBlock', async (filePath: string, blockIndex: number) => {
+        vscode.commands.registerCommand('diffTracker.goToBlock', async (filePath: string, blockRef: string | number) => {
             const blocks = diffTracker.getChangeBlocks(filePath);
-            if (blockIndex >= 0 && blockIndex < blocks.length) {
-                const block = blocks[blockIndex];
-                const uri = vscode.Uri.file(filePath);
-                const doc = await vscode.workspace.openTextDocument(uri);
-                const editor = await vscode.window.showTextDocument(doc);
-                const line = Math.max(0, block.startLine - 1);
-                const position = new vscode.Position(line, 0);
-                editor.selection = new vscode.Selection(position, position);
-                editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+            if (blocks.length === 0) {
+                return;
             }
+
+            let block;
+            if (typeof blockRef === 'number') {
+                if (blockRef < 0 || blockRef >= blocks.length) {
+                    return;
+                }
+                block = blocks[blockRef];
+            } else {
+                block = blocks.find(item => item.blockId === blockRef);
+                if (!block) {
+                    return;
+                }
+            }
+
+            const uri = vscode.Uri.file(filePath);
+            const doc = await vscode.workspace.openTextDocument(uri);
+            const editor = await vscode.window.showTextDocument(doc);
+            const line = Math.max(0, block.startLine - 1);
+            const position = new vscode.Position(line, 0);
+            editor.selection = new vscode.Selection(position, position);
+            editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
         })
     );
 
