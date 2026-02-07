@@ -2,6 +2,12 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import { DiffTracker, FileDiff } from './diffTracker';
 
+interface DirNode {
+    name: string;
+    childrenDirs: Map<string, DirNode>;
+    files: FileDiff[];
+}
+
 export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
     private _onDidChangeTreeData = new vscode.EventEmitter<TreeItem | undefined | null | void>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
@@ -40,25 +46,18 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
             revertButton.description = `${changes.length} file(s)`;
             items.push(revertButton);
 
-            // Group files by directory
-            const filesByDir = new Map<string, FileDiff[]>();
+            const rootNode: DirNode = {
+                name: '',
+                childrenDirs: new Map<string, DirNode>(),
+                files: []
+            };
 
-            changes.forEach(change => {
-                const dir = path.dirname(change.filePath);
-                if (!filesByDir.has(dir)) {
-                    filesByDir.set(dir, []);
-                }
-                filesByDir.get(dir)!.push(change);
-            });
-
-            // Create tree items (always show directory tree)
-            for (const [dir, files] of filesByDir) {
-                const dirItem = new TreeItem(path.basename(dir), vscode.TreeItemCollapsibleState.Expanded);
-                dirItem.iconPath = new vscode.ThemeIcon('folder');
-                dirItem.description = `${files.length} file(s)`;
-                dirItem.children = files.map(file => this.createFileItem(file));
-                items.push(dirItem);
+            for (const change of changes) {
+                const relativePath = this.toWorkspaceRelative(change.filePath);
+                this.insertFileIntoTree(rootNode, relativePath, change);
             }
+
+            items.push(...this.buildTreeItemsFromNode(rootNode, true));
         } else if (element.children) {
             return Promise.resolve(element.children);
         }
@@ -83,6 +82,90 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
         item.contextValue = 'changedFile';
 
         return item;
+    }
+
+    private toWorkspaceRelative(filePath: string): string {
+        const uri = vscode.Uri.file(filePath);
+        const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
+        if (!workspaceFolder) {
+            return path.basename(filePath);
+        }
+
+        const relativePath = path.relative(workspaceFolder.uri.fsPath, filePath);
+        const normalizedRelative = relativePath.split(path.sep).join('/');
+
+        // Avoid collisions across workspace folders in multi-root workspaces.
+        const workspaceFolders = vscode.workspace.workspaceFolders ?? [];
+        if (workspaceFolders.length > 1) {
+            return `${workspaceFolder.name}/${normalizedRelative}`;
+        }
+
+        return normalizedRelative;
+    }
+
+    private insertFileIntoTree(rootNode: DirNode, relativePath: string, fileDiff: FileDiff): void {
+        const normalized = relativePath.replace(/\\/g, '/');
+        const parts = normalized.split('/').filter(Boolean);
+        if (parts.length === 0) {
+            rootNode.files.push(fileDiff);
+            return;
+        }
+
+        let current = rootNode;
+        for (let i = 0; i < parts.length - 1; i++) {
+            const dirName = parts[i];
+            let next = current.childrenDirs.get(dirName);
+            if (!next) {
+                next = {
+                    name: dirName,
+                    childrenDirs: new Map<string, DirNode>(),
+                    files: []
+                };
+                current.childrenDirs.set(dirName, next);
+            }
+            current = next;
+        }
+
+        current.files.push(fileDiff);
+    }
+
+    private buildTreeItemsFromNode(node: DirNode, isRoot = false): TreeItem[] {
+        const items: TreeItem[] = [];
+
+        const sortedDirNames = [...node.childrenDirs.keys()].sort((a, b) => a.localeCompare(b));
+        for (const dirName of sortedDirNames) {
+            const childNode = node.childrenDirs.get(dirName);
+            if (!childNode) {
+                continue;
+            }
+
+            const dirItem = new TreeItem(childNode.name, vscode.TreeItemCollapsibleState.Expanded);
+            dirItem.iconPath = new vscode.ThemeIcon('folder');
+            dirItem.children = this.buildTreeItemsFromNode(childNode);
+            dirItem.description = `${this.countFilesInNode(childNode)} file(s)`;
+            items.push(dirItem);
+        }
+
+        const sortedFiles = [...node.files].sort((a, b) =>
+            a.fileName.localeCompare(b.fileName) || a.filePath.localeCompare(b.filePath)
+        );
+        for (const file of sortedFiles) {
+            items.push(this.createFileItem(file));
+        }
+
+        if (isRoot) {
+            return items;
+        }
+
+        return items;
+    }
+
+    private countFilesInNode(node: DirNode): number {
+        let count = node.files.length;
+        for (const childNode of node.childrenDirs.values()) {
+            count += this.countFilesInNode(childNode);
+        }
+        return count;
     }
 
     private getFileIcon(fileName: string): vscode.ThemeIcon {
