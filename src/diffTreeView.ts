@@ -70,7 +70,8 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
         const item = new TreeItem(displayName, vscode.TreeItemCollapsibleState.None);
         item.filePath = fileDiff.filePath;
         item.isDeleted = fileDiff.isDeleted;
-        item.iconPath = this.getFileIcon(fileDiff.fileName);
+        item.resourceUri = vscode.Uri.file(fileDiff.filePath);
+        item.iconPath = vscode.ThemeIcon.File;
         item.tooltip = fileDiff.isDeleted
             ? `${fileDiff.filePath}\nDeleted from disk`
             : fileDiff.filePath;
@@ -172,62 +173,6 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
         return count;
     }
 
-    private getFileIcon(fileName: string): vscode.ThemeIcon {
-        const ext = fileName.split('.').pop()?.toLowerCase() || '';
-
-        // Map file extensions to VS Code icons
-        const iconMap: { [key: string]: string } = {
-            // Programming languages
-            'ts': 'symbol-class',
-            'tsx': 'symbol-class',
-            'js': 'symbol-method',
-            'jsx': 'symbol-method',
-            'py': 'symbol-namespace',
-            'java': 'symbol-interface',
-            'c': 'symbol-struct',
-            'cpp': 'symbol-struct',
-            'h': 'symbol-struct',
-            'cs': 'symbol-class',
-            'go': 'symbol-method',
-            'rs': 'symbol-module',
-            'rb': 'ruby',
-            'php': 'symbol-method',
-            'swift': 'symbol-class',
-            'kt': 'symbol-class',
-
-            // Web
-            'html': 'code',
-            'css': 'symbol-color',
-            'scss': 'symbol-color',
-            'sass': 'symbol-color',
-            'less': 'symbol-color',
-            'vue': 'symbol-misc',
-
-            // Config/Data
-            'json': 'json',
-            'yaml': 'symbol-key',
-            'yml': 'symbol-key',
-            'xml': 'symbol-key',
-            'toml': 'symbol-key',
-            'ini': 'gear',
-            'env': 'gear',
-
-            // Docs
-            'md': 'book',
-            'txt': 'file-text',
-            'pdf': 'file-pdf',
-
-            // Others
-            'sql': 'database',
-            'sh': 'terminal',
-            'bash': 'terminal',
-            'zsh': 'terminal',
-            'dockerfile': 'package'
-        };
-
-        const iconName = iconMap[ext] || 'file-code';
-        return new vscode.ThemeIcon(iconName);
-    }
 }
 
 class TreeItem extends vscode.TreeItem {
