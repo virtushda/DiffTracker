@@ -312,6 +312,7 @@
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
     "test:webview-anchors": "node test/webview-annotation-mapping.mjs",
+    "test:similarity-pairing": "node test/similarity-pairing.mjs",
     "lint": "eslint src --ext ts",
     "package": "vsce package"
   },

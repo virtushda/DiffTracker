@@ -1724,20 +1724,45 @@ export class DiffTracker {
     }
 
     private calculateSetSimilarity(str1: string | undefined, str2: string | undefined): number {
-        const cleaned1 = (str1 ?? '').trim().replace(/\s+/g, '');
-        const cleaned2 = (str2 ?? '').trim().replace(/\s+/g, '');
+        const tokens1 = this.tokenizeForSimilarity(str1);
+        const tokens2 = this.tokenizeForSimilarity(str2);
 
-        if (!cleaned1 && !cleaned2) {
+        if (tokens1.length === 0 && tokens2.length === 0) {
             return 1;
         }
 
-        const set1 = new Set(cleaned1);
-        const set2 = new Set(cleaned2);
+        const counts1 = new Map<string, number>();
+        const counts2 = new Map<string, number>();
+        for (const token of tokens1) {
+            counts1.set(token, (counts1.get(token) ?? 0) + 1);
+        }
+        for (const token of tokens2) {
+            counts2.set(token, (counts2.get(token) ?? 0) + 1);
+        }
 
-        const intersection = new Set([...set1].filter(x => set2.has(x)));
-        const union = new Set([...set1, ...set2]);
+        let overlapCount = 0;
+        for (const [token, count1] of counts1.entries()) {
+            const count2 = counts2.get(token) ?? 0;
+            overlapCount += Math.min(count1, count2);
+        }
 
-        return union.size > 0 ? intersection.size / union.size : 0;
+        const totalCount = tokens1.length + tokens2.length;
+        return totalCount > 0 ? (2 * overlapCount) / totalCount : 0;
+    }
+
+    private tokenizeForSimilarity(input: string | undefined): string[] {
+        const normalized = (input ?? '').trim().replace(/\s+/g, ' ');
+        if (!normalized) {
+            return [];
+        }
+
+        const tokens = normalized.match(/[A-Za-z0-9_]+/g);
+        if (tokens && tokens.length > 0) {
+            return tokens;
+        }
+
+        const compact = normalized.replace(/\s+/g, '');
+        return [...compact];
     }
 
     private detectDominantEol(content: string): '\n' | '\r\n' | '\r' {
