@@ -148,6 +148,12 @@
         "icon": "$(discard)"
       },
       {
+        "command": "diffTracker.keepAllChanges",
+        "title": "Accept All Changes",
+        "category": "Diff Tracker",
+        "icon": "$(check)"
+      },
+      {
         "command": "diffTracker.revertFile",
         "title": "Revert File",
         "category": "Diff Tracker",
@@ -288,7 +294,14 @@
           "group": "navigation"
         }
       ]
-    }
+    },
+    "keybindings": [
+      {
+        "command": "diffTracker.toggleRecording",
+        "key": "shift+alt+d",
+        "mac": "shift+option+d"
+      }
+    ]
   },
   "scripts": {
     "vscode:prepublish": "npm run compile",
