@@ -138,6 +138,46 @@ export class DiffTracker {
         this._onDidTrackChanges.fire();
     }
 
+    public async resetBaselineToCurrentState(): Promise<void> {
+        if (!this.isRecording) {
+            this.clearDiffs();
+            return;
+        }
+
+        this.clearExternalChangeTimers();
+        this.clearDocumentChangeTimers();
+
+        this.fileSnapshots.clear();
+        this.trackedChanges.clear();
+        this.lineChanges.clear();
+        this.inlineViews.clear();
+        this.pendingExternalChanges.clear();
+        this.snapshotInitialized = false;
+        this.baselineBuilding = true;
+        this._onDidChangeBaselineState.fire('building');
+
+        try {
+            // Open editors may be ahead of on-disk state; use their in-memory text as baseline.
+            vscode.workspace.textDocuments.forEach(doc => {
+                if (doc.uri.scheme === 'file') {
+                    this.fileSnapshots.set(doc.uri.fsPath, doc.getText());
+                }
+            });
+
+            await this.initializeWorkspaceSnapshots();
+        } catch (error) {
+            console.error('Failed to reset baseline to current state:', error);
+        } finally {
+            // Ensure we never leave baseline-building state hanging after failures.
+            if (this.isRecording && this.baselineBuilding) {
+                this.snapshotInitialized = true;
+                this.baselineBuilding = false;
+                this._onDidChangeBaselineState.fire('ready');
+            }
+            this._onDidTrackChanges.fire();
+        }
+    }
+
     private async startExternalWatchers(): Promise<void> {
         this.disposeFileWatchers();
         this.externalWatcherEnabled = false;

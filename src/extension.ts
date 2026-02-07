@@ -341,11 +341,15 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
-        vscode.commands.registerCommand('diffTracker.clearDiffs', () => {
-            diffTracker.clearDiffs();
+        vscode.commands.registerCommand('diffTracker.clearDiffs', async () => {
+            if (diffTracker.getIsRecording()) {
+                await diffTracker.resetBaselineToCurrentState();
+            } else {
+                diffTracker.clearDiffs();
+            }
             refreshChangesTree();
             decorationManager.clearAllDecorations();
-            vscode.window.showInformationMessage('Diff Tracker: All diffs cleared');
+            vscode.window.showInformationMessage('Diff Tracker: Baseline reset to current workspace state');
         })
     );
 
