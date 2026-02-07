@@ -24,9 +24,15 @@ let changesTreeView: vscode.TreeView<any> | undefined;
 type DefaultOpenMode = 'webview' | 'inline' | 'sideBySide' | 'original' | 'splitOriginalWebview';
 
 function extractFilePath(filePathOrItem: string | any): string | undefined {
-    return typeof filePathOrItem === 'string'
-        ? filePathOrItem
-        : filePathOrItem?.filePath;
+    if (typeof filePathOrItem === 'string') {
+        return filePathOrItem;
+    }
+
+    if (filePathOrItem instanceof vscode.Uri) {
+        return filePathOrItem.fsPath;
+    }
+
+    return filePathOrItem?.filePath;
 }
 
 function extractIsDeleted(filePathOrItem: string | any): boolean | undefined {
