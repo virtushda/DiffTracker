@@ -82,13 +82,15 @@
             "webview",
             "inline",
             "sideBySide",
-            "original"
+            "original",
+            "splitOriginalWebview"
           ],
           "enumDescriptions": [
             "Open interactive webview diff panel",
             "Open inline diff editor (read-only)",
             "Open VS Code side-by-side diff editor",
-            "Open original file directly"
+            "Open original file directly",
+            "Open split view: left original file, right webview diff panel"
           ],
           "description": "Default open mode when clicking a changed file in Diff Tracker"
         },
@@ -222,6 +224,11 @@
         "title": "Show Webview Diff (Active)",
         "category": "Diff Tracker",
         "icon": "$(preview)"
+      },
+      {
+        "command": "diffTracker.showOriginalAndWebviewSplit",
+        "title": "Show Split: Original | Webview",
+        "category": "Diff Tracker"
       },
       {
         "command": "diffTracker.selectDefaultOpenMode",

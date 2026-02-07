@@ -20,7 +20,7 @@ let inlineContentProvider: InlineContentProvider;
 let codeLensProvider: DiffCodeLensProvider;
 let settingsTreeDataProvider: SettingsTreeDataProvider;
 
-type DefaultOpenMode = 'webview' | 'inline' | 'sideBySide' | 'original';
+type DefaultOpenMode = 'webview' | 'inline' | 'sideBySide' | 'original' | 'splitOriginalWebview';
 
 function extractFilePath(filePathOrItem: string | any): string | undefined {
     return typeof filePathOrItem === 'string'
@@ -31,7 +31,7 @@ function extractFilePath(filePathOrItem: string | any): string | undefined {
 function getDefaultOpenMode(): DefaultOpenMode {
     const config = vscode.workspace.getConfiguration('diffTracker');
     const mode = config.get<string>('defaultOpenMode', 'webview');
-    if (mode === 'inline' || mode === 'sideBySide' || mode === 'original' || mode === 'webview') {
+    if (mode === 'inline' || mode === 'sideBySide' || mode === 'original' || mode === 'splitOriginalWebview' || mode === 'webview') {
         return mode;
     }
     return 'webview';
@@ -277,6 +277,9 @@ export function activate(context: vscode.ExtensionContext) {
                 case 'original':
                     await vscode.commands.executeCommand('diffTracker.openOriginalFile', filePath);
                     break;
+                case 'splitOriginalWebview':
+                    await vscode.commands.executeCommand('diffTracker.showOriginalAndWebviewSplit', filePath);
+                    break;
                 case 'webview':
                 default:
                     await vscode.commands.executeCommand('diffTracker.showWebviewDiff', filePath);
@@ -394,6 +397,30 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('diffTracker.showOriginalAndWebviewSplit', async (filePathOrItem: string | any) => {
+            const filePath = extractFilePath(filePathOrItem);
+            if (!filePath) {
+                return;
+            }
+
+            const uri = vscode.Uri.file(filePath);
+            const doc = await vscode.workspace.openTextDocument(uri);
+            await vscode.window.showTextDocument(doc, {
+                viewColumn: vscode.ViewColumn.One,
+                preserveFocus: true,
+                preview: false
+            });
+
+            WebviewDiffPanel.createOrShow(
+                context.extensionUri,
+                diffTracker,
+                filePath,
+                vscode.ViewColumn.Two
+            );
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('diffTracker.selectDefaultOpenMode', async () => {
             const config = vscode.workspace.getConfiguration('diffTracker');
             const current = getDefaultOpenMode();
@@ -401,7 +428,8 @@ export function activate(context: vscode.ExtensionContext) {
                 { label: 'Webview', description: 'Interactive diff panel', value: 'webview' },
                 { label: 'Inline (read-only)', description: 'Virtual inline diff document', value: 'inline' },
                 { label: 'Side-by-Side', description: 'VS Code built-in diff editor', value: 'sideBySide' },
-                { label: 'Original', description: 'Open original file directly', value: 'original' }
+                { label: 'Original', description: 'Open original file directly', value: 'original' },
+                { label: 'Split: Original | Webview', description: 'Left original file, right webview diff', value: 'splitOriginalWebview' }
             ];
 
             const selected = await vscode.window.showQuickPick(

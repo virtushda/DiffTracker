@@ -136,7 +136,8 @@ export class SettingsTreeDataProvider implements vscode.TreeDataProvider<Setting
                 webview: 'Webview',
                 inline: 'Inline (read-only)',
                 sideBySide: 'Side-by-Side',
-                original: 'Original'
+                original: 'Original',
+                splitOriginalWebview: 'Split: Original | Webview'
             };
             const modeLabel = modeLabelMap[defaultOpenMode] ?? 'Webview';
 

@@ -53,11 +53,12 @@ export class WebviewDiffPanel {
     public static createOrShow(
         extensionUri: vscode.Uri,
         diffTracker: DiffTracker,
-        filePath: string
+        filePath: string,
+        revealColumn?: vscode.ViewColumn
     ): WebviewDiffPanel {
-        const column = vscode.window.activeTextEditor
+        const column = revealColumn ?? (vscode.window.activeTextEditor
             ? vscode.window.activeTextEditor.viewColumn
-            : undefined;
+            : undefined);
 
         // If panel exists and showing the same file, reveal it
         if (WebviewDiffPanel.currentPanel && WebviewDiffPanel.currentPanel.filePath === filePath) {
@@ -76,7 +77,7 @@ export class WebviewDiffPanel {
         const panel = vscode.window.createWebviewPanel(
             'diffTrackerWebview',
             'Diff View',
-            vscode.ViewColumn.Beside,
+            revealColumn ?? vscode.ViewColumn.Beside,
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
