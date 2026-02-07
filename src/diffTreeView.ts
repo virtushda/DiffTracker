@@ -66,16 +66,20 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
     }
 
     private createFileItem(fileDiff: FileDiff): TreeItem {
-        const item = new TreeItem(fileDiff.fileName, vscode.TreeItemCollapsibleState.None);
+        const displayName = fileDiff.isDeleted ? `${fileDiff.fileName} [Deleted]` : fileDiff.fileName;
+        const item = new TreeItem(displayName, vscode.TreeItemCollapsibleState.None);
         item.filePath = fileDiff.filePath;
+        item.isDeleted = fileDiff.isDeleted;
         item.iconPath = this.getFileIcon(fileDiff.fileName);
-        item.tooltip = fileDiff.filePath;
+        item.tooltip = fileDiff.isDeleted
+            ? `${fileDiff.filePath}\nDeleted from disk`
+            : fileDiff.filePath;
 
         // Open with configured default mode
         item.command = {
             command: 'diffTracker.openDiffDefault',
             title: 'Open Diff',
-            arguments: [fileDiff.filePath]
+            arguments: [item]
         };
 
         // Add side-by-side button in context menu
@@ -229,6 +233,7 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
 class TreeItem extends vscode.TreeItem {
     public children?: TreeItem[];
     public filePath?: string;
+    public isDeleted?: boolean;
 
     constructor(
         public readonly label: string,

@@ -29,6 +29,13 @@ function extractFilePath(filePathOrItem: string | any): string | undefined {
         : filePathOrItem?.filePath;
 }
 
+function extractIsDeleted(filePathOrItem: string | any): boolean | undefined {
+    if (!filePathOrItem || typeof filePathOrItem === 'string') {
+        return undefined;
+    }
+    return filePathOrItem?.isDeleted === true;
+}
+
 function getDefaultOpenMode(): DefaultOpenMode {
     const config = vscode.workspace.getConfiguration('diffTracker');
     const mode = config.get<string>('defaultOpenMode', 'webview');
@@ -288,7 +295,17 @@ export function activate(context: vscode.ExtensionContext) {
                 return;
             }
 
-            switch (getDefaultOpenMode()) {
+            const deletedFromItem = extractIsDeleted(filePathOrItem);
+            const deletedFromTracked = diffTracker.getTrackedChanges().find(change => change.filePath === filePath)?.isDeleted === true;
+            const isDeleted = deletedFromItem ?? deletedFromTracked;
+            const defaultMode = getDefaultOpenMode();
+
+            if (isDeleted && defaultMode === 'original') {
+                await vscode.commands.executeCommand('diffTracker.showWebviewDiff', filePath);
+                return;
+            }
+
+            switch (defaultMode) {
                 case 'inline':
                     await vscode.commands.executeCommand('diffTracker.showInlineDiff', filePath);
                     break;

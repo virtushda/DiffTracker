@@ -9,6 +9,7 @@ export interface FileDiff {
     fileName: string;
     originalContent: string;
     currentContent: string;
+    isDeleted: boolean;
     changes: Diff.Change[];
     timestamp: Date;
 }
@@ -695,12 +696,14 @@ export class DiffTracker {
         );
         const changes = Diff.diffLines(normalizedOriginal, normalizedCurrent);
         const fileName = filePath.split('/').pop() || filePath;
+        const isDeleted = originalContent.length > 0 && currentContent.length === 0;
 
         this.trackedChanges.set(filePath, {
             filePath,
             fileName,
             originalContent,
             currentContent,
+            isDeleted,
             changes,
             timestamp: new Date()
         });
@@ -714,24 +717,9 @@ export class DiffTracker {
         let revertedCount = 0;
 
         for (const change of changes) {
-            try {
-                const uri = vscode.Uri.file(change.filePath);
-                const doc = await vscode.workspace.openTextDocument(uri);
-                const edit = new vscode.WorkspaceEdit();
-
-                // Replace entire document (including final newline if present)
-                const fullRange = this.getFullDocumentRange(doc);
-
-                edit.replace(uri, fullRange, change.originalContent);
-
-                const success = await vscode.workspace.applyEdit(edit);
-                if (success) {
-                    await doc.save();
-                    this.fileSnapshots.set(change.filePath, doc.getText());
-                    revertedCount++;
-                }
-            } catch (error) {
-                console.error(`Failed to revert ${change.filePath}:`, error);
+            const restored = await this.restoreFileToContent(change.filePath, change.originalContent);
+            if (restored) {
+                revertedCount++;
             }
         }
 
@@ -747,23 +735,8 @@ export class DiffTracker {
             return false;
         }
 
-        try {
-            const uri = vscode.Uri.file(change.filePath);
-            const doc = await vscode.workspace.openTextDocument(uri);
-            const edit = new vscode.WorkspaceEdit();
-
-            const fullRange = this.getFullDocumentRange(doc);
-
-            edit.replace(uri, fullRange, change.originalContent);
-            const success = await vscode.workspace.applyEdit(edit);
-            if (!success) {
-                return false;
-            }
-
-            await doc.save();
-            this.fileSnapshots.set(change.filePath, doc.getText());
-        } catch (error) {
-            console.error(`Failed to revert ${filePath}:`, error);
+        const restored = await this.restoreFileToContent(change.filePath, change.originalContent);
+        if (!restored) {
             return false;
         }
 
@@ -773,6 +746,37 @@ export class DiffTracker {
         this._onDidTrackChanges.fire();
 
         return true;
+    }
+
+    private async restoreFileToContent(filePath: string, content: string): Promise<boolean> {
+        const uri = vscode.Uri.file(filePath);
+
+        try {
+            const doc = await vscode.workspace.openTextDocument(uri);
+            const edit = new vscode.WorkspaceEdit();
+            const fullRange = this.getFullDocumentRange(doc);
+
+            edit.replace(uri, fullRange, content);
+            const success = await vscode.workspace.applyEdit(edit);
+            if (!success) {
+                return false;
+            }
+
+            await doc.save();
+            this.fileSnapshots.set(filePath, doc.getText());
+            return true;
+        } catch {
+            // File may have been deleted. Recreate it from the snapshot content.
+            try {
+                await vscode.workspace.fs.createDirectory(vscode.Uri.file(path.dirname(filePath)));
+                await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
+                this.fileSnapshots.set(filePath, content);
+                return true;
+            } catch (error) {
+                console.error(`Failed to restore ${filePath}:`, error);
+                return false;
+            }
+        }
     }
 
     public getIsRecording(): boolean {
