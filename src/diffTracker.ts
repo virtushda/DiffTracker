@@ -206,7 +206,6 @@ export class DiffTracker {
                     watcher.onDidDelete(uri => this.onExternalFileDeleted(uri));
 
                     this.fileWatchers.push(watcher);
-                    this.disposables.push(watcher);
                 };
 
                 createWatcher(patternGlob);
@@ -1020,29 +1019,6 @@ export class DiffTracker {
         // Recompute diff against updated snapshot
         this.updateTrackedDiff(filePath, currentText);
         return true;
-    }
-
-    /**
-     * Find where to insert added lines in the original snapshot
-     */
-    private findInsertPosition(
-        addedBlock: { startLine: number; changes: LineChange[] },
-        allBlocks: Array<{ startLine: number; type: string; changes: LineChange[] }>,
-        originalLength: number
-    ): number {
-        // Look at the line before the added block in current doc
-        // and find its corresponding original line number
-        const lineChanges = addedBlock.changes;
-        if (lineChanges.length === 0) return originalLength;
-
-        // Find the closest preceding non-added line that has an originalLineNumber
-        // For now, use a simple heuristic: insert at the originalLineNumber of the first change
-        // or at the end if no reference
-        const firstChange = lineChanges[0];
-        if (firstChange.originalLineNumber !== undefined) {
-            return firstChange.originalLineNumber - 1;
-        }
-        return originalLength;
     }
 
     /**
@@ -2214,8 +2190,12 @@ export class DiffTracker {
     }
 
     public dispose() {
+        this.clearExternalChangeTimers();
+        this.clearDocumentChangeTimers();
+        this.disposeFileWatchers();
         this.disposables.forEach(d => d.dispose());
         this._onDidChangeRecordingState.dispose();
         this._onDidTrackChanges.dispose();
+        this._onDidChangeBaselineState.dispose();
     }
 }

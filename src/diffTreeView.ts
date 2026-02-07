@@ -8,7 +8,7 @@ interface DirNode {
     files: FileDiff[];
 }
 
-export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
+export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem>, vscode.Disposable {
     private _onDidChangeTreeData = new vscode.EventEmitter<TreeItem | undefined | null | void>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
@@ -186,6 +186,10 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
             count += this.countFilesInNode(childNode);
         }
         return count;
+    }
+
+    public dispose(): void {
+        this._onDidChangeTreeData.dispose();
     }
 
 }

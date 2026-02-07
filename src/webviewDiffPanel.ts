@@ -147,6 +147,8 @@ export class WebviewDiffPanel {
             const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.filePath);
             currentContent = doc?.getText() ?? originalContent;
         }
+        const logicalOriginalContent = this.toLogicalDiffContent(originalContent);
+        const logicalCurrentContent = this.toLogicalDiffContent(currentContent);
         const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath).map(block => this.serializeChangeBlock(block));
         const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
         const lang = this.getLangForFileName(fileName);
@@ -156,8 +158,8 @@ export class WebviewDiffPanel {
             filePath: this.filePath,
             fileName,
             lang,
-            oldContents: originalContent,
-            newContents: currentContent,
+            oldContents: logicalOriginalContent,
+            newContents: logicalCurrentContent,
             changeBlocks,
             style: this.currentStyle,
             wrap: this.currentWrap,
@@ -329,6 +331,8 @@ export class WebviewDiffPanel {
         const trackedChanges = this.diffTracker.getTrackedChanges();
         const fileChange = trackedChanges.find(c => c.filePath === this.filePath);
         const currentContent = fileChange?.currentContent ?? originalContent;
+        const logicalOriginalContent = this.toLogicalDiffContent(originalContent);
+        const logicalCurrentContent = this.toLogicalDiffContent(currentContent);
         const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
 
         // Get change blocks from diffTracker - this is the source of truth for block indexing
@@ -550,13 +554,13 @@ export class WebviewDiffPanel {
 
         const oldFile = {
             name: '${this.escapeHtml(fileName)}',
-            contents: \`${escapeForJs(originalContent)}\`,
+            contents: \`${escapeForJs(logicalOriginalContent)}\`,
             lang: '${lang}'
         };
 
         const newFile = {
             name: '${this.escapeHtml(fileName)}',
-            contents: \`${escapeForJs(currentContent)}\`,
+            contents: \`${escapeForJs(logicalCurrentContent)}\`,
             lang: '${lang}'
         };
 
@@ -1086,6 +1090,18 @@ export class WebviewDiffPanel {
     </script>
 </body>
 </html>`;
+    }
+
+    private toLogicalDiffContent(content: string): string {
+        const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+        if (normalized.length === 0) {
+            return '';
+        }
+
+        const hasFinalEol = normalized.endsWith('\n');
+        const split = normalized.split('\n');
+        const lines = hasFinalEol ? split.slice(0, -1) : split;
+        return lines.join('\n');
     }
 
     private escapeHtml(str: string): string {

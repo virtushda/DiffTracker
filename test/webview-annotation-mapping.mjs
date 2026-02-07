@@ -181,10 +181,31 @@ function validateAnnotationTarget(annotation, block, diffMeta) {
     };
 }
 
+function toLogicalDiffContent(content) {
+    const normalized = content.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+    if (normalized.length === 0) {
+        return '';
+    }
+
+    const hasFinalEol = normalized.endsWith('\n');
+    const split = normalized.split('\n');
+    const lines = hasFinalEol ? split.slice(0, -1) : split;
+    return lines.join('\n');
+}
+
 function resolveAndValidate(block, oldContents, newContents) {
     const diffMeta = parseDiffFromFile(
         { name: 'sample.txt', contents: oldContents },
         { name: 'sample.txt', contents: newContents }
+    );
+    const resolved = resolveBlockAnnotation(block, diffMeta);
+    return validateAnnotationTarget(resolved, block, diffMeta);
+}
+
+function resolveAndValidateLogical(block, oldContents, newContents) {
+    const diffMeta = parseDiffFromFile(
+        { name: 'sample.txt', contents: toLogicalDiffContent(oldContents) },
+        { name: 'sample.txt', contents: toLogicalDiffContent(newContents) }
     );
     const resolved = resolveBlockAnnotation(block, diffMeta);
     return validateAnnotationTarget(resolved, block, diffMeta);
@@ -322,4 +343,42 @@ runCase('out-of-range line falls back deterministically', () => {
     assert.equal(annotation1?.side, 'additions');
     assert.equal(annotation1?.lineNumber, 3);
     assert.deepEqual(annotation1, annotation2);
+});
+
+runCase('final-EOL-only change has no logical webview hunks', () => {
+    const oldContents = 'if __name__ == "__main__":\n    pass';
+    const newContents = 'if __name__ == "__main__":\n    pass\n';
+
+    const diffMeta = parseDiffFromFile(
+        { name: 'sample.txt', contents: toLogicalDiffContent(oldContents) },
+        { name: 'sample.txt', contents: toLogicalDiffContent(newContents) }
+    );
+
+    assert.equal((diffMeta.hunks ?? []).length, 0);
+});
+
+runCase('real content change with final-EOL toggle keeps stable logical block anchor', () => {
+    const oldContents = 'a\nold\nb';
+    const newContents = 'a\nnew\nb\n';
+    const block = {
+        blockId: 'b7',
+        blockIndex: 0,
+        type: 'modified',
+        startLine: 2,
+        endLine: 2,
+        originalStartLine: 2,
+        originalEndLine: 2,
+        currentLineNumbers: [2],
+        originalLineNumbers: [2]
+    };
+
+    const diffMeta = parseDiffFromFile(
+        { name: 'sample.txt', contents: toLogicalDiffContent(oldContents) },
+        { name: 'sample.txt', contents: toLogicalDiffContent(newContents) }
+    );
+    assert.equal((diffMeta.hunks ?? []).length, 1);
+
+    const annotation = resolveAndValidateLogical(block, oldContents, newContents);
+    assert.equal(annotation?.side, 'additions');
+    assert.equal(annotation?.lineNumber, 2);
 });

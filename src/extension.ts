@@ -19,6 +19,7 @@ let originalContentProvider: OriginalContentProvider;
 let inlineContentProvider: InlineContentProvider;
 let codeLensProvider: DiffCodeLensProvider;
 let settingsTreeDataProvider: SettingsTreeDataProvider;
+let diffTreeDataProvider: DiffTreeDataProvider;
 let changesTreeView: vscode.TreeView<any> | undefined;
 
 type DefaultOpenMode = 'webview' | 'inline' | 'sideBySide' | 'original' | 'splitOriginalWebview';
@@ -63,9 +64,9 @@ export function activate(context: vscode.ExtensionContext) {
     settingsTreeDataProvider = new SettingsTreeDataProvider();
 
     // Register tree view provider for activity bar
-    const treeDataProvider = new DiffTreeDataProvider(diffTracker);
+    diffTreeDataProvider = new DiffTreeDataProvider(diffTracker);
     changesTreeView = vscode.window.createTreeView('diffTracker.changesView', {
-        treeDataProvider,
+        treeDataProvider: diffTreeDataProvider,
         showCollapseAll: false
     });
     context.subscriptions.push(changesTreeView);
@@ -76,7 +77,7 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     const refreshChangesTree = () => {
-        treeDataProvider.refresh();
+        diffTreeDataProvider.refresh();
 
         if (!changesTreeView) {
             return;
@@ -91,6 +92,23 @@ export function activate(context: vscode.ExtensionContext) {
         } else {
             changesTreeView.badge = undefined;
         }
+    };
+
+    const startRecordingFlow = () => {
+        diffTracker.startRecording();
+        void vscode.commands.executeCommand('setContext', 'diffTracker.isRecording', true);
+        refreshChangesTree();
+
+        if (vscode.window.activeTextEditor) {
+            decorationManager.updateDecorations(vscode.window.activeTextEditor);
+        }
+    };
+
+    const stopRecordingFlow = () => {
+        diffTracker.stopRecording();
+        void vscode.commands.executeCommand('setContext', 'diffTracker.isRecording', false);
+        refreshChangesTree();
+        decorationManager.clearAllDecorations();
     };
 
     // Register toggle setting command
@@ -128,42 +146,22 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('diffTracker.toggleRecording', () => {
             if (diffTracker.getIsRecording()) {
-                diffTracker.stopRecording();
-                vscode.commands.executeCommand('setContext', 'diffTracker.isRecording', false);
-                refreshChangesTree();
-                decorationManager.clearAllDecorations();
+                stopRecordingFlow();
             } else {
-                diffTracker.startRecording();
-                vscode.commands.executeCommand('setContext', 'diffTracker.isRecording', true);
-                refreshChangesTree();
-
-                // Update decorations for current editor
-                if (vscode.window.activeTextEditor) {
-                    decorationManager.updateDecorations(vscode.window.activeTextEditor);
-                }
+                startRecordingFlow();
             }
         })
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('diffTracker.startRecording', () => {
-            diffTracker.startRecording();
-            vscode.commands.executeCommand('setContext', 'diffTracker.isRecording', true);
-            refreshChangesTree();
-
-            // Update decorations for current editor
-            if (vscode.window.activeTextEditor) {
-                decorationManager.updateDecorations(vscode.window.activeTextEditor);
-            }
+            startRecordingFlow();
         })
     );
 
     context.subscriptions.push(
         vscode.commands.registerCommand('diffTracker.stopRecording', () => {
-            diffTracker.stopRecording();
-            vscode.commands.executeCommand('setContext', 'diffTracker.isRecording', false);
-            refreshChangesTree();
-            decorationManager.clearAllDecorations();
+            stopRecordingFlow();
         })
     );
 
@@ -585,5 +583,11 @@ export function deactivate() {
     }
     if (codeLensProvider) {
         codeLensProvider.dispose();
+    }
+    if (settingsTreeDataProvider) {
+        settingsTreeDataProvider.dispose();
+    }
+    if (diffTreeDataProvider) {
+        diffTreeDataProvider.dispose();
     }
 }

@@ -7,11 +7,17 @@ import { DiffTracker } from './diffTracker';
 export class DiffCodeLensProvider implements vscode.CodeLensProvider {
     private _onDidChangeCodeLenses = new vscode.EventEmitter<void>();
     public readonly onDidChangeCodeLenses = this._onDidChangeCodeLenses.event;
+    private lensCache = new Map<string, vscode.CodeLens[]>();
+    private prewarmTimer: NodeJS.Timeout | undefined;
+    private disposed = false;
+    private readonly prewarmDelayMs = 20;
 
     constructor(private diffTracker: DiffTracker) {
         // Refresh CodeLens when diff changes
         this.diffTracker.onDidTrackChanges(() => {
+            this.clearLensCache();
             this._onDidChangeCodeLenses.fire();
+            this.schedulePrewarmVisibleEditors();
         });
     }
 
@@ -37,10 +43,17 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
             return [];
         }
 
+        const cacheKey = this.getCacheKey(document);
+        const cached = this.lensCache.get(cacheKey);
+        if (cached) {
+            return cached;
+        }
+
         const filePath = document.uri.fsPath;
         const blocks = this.diffTracker.getChangeBlocks(filePath);
 
         if (blocks.length === 0) {
+            this.lensCache.set(cacheKey, []);
             return [];
         }
 
@@ -125,10 +138,82 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
             }
         });
 
+        this.lensCache.set(cacheKey, codeLenses);
         return codeLenses;
     }
 
     public dispose(): void {
+        this.disposed = true;
+        if (this.prewarmTimer) {
+            clearTimeout(this.prewarmTimer);
+            this.prewarmTimer = undefined;
+        }
+        this.clearLensCache();
         this._onDidChangeCodeLenses.dispose();
+    }
+
+    private getCacheKey(document: vscode.TextDocument): string {
+        return `${document.uri.toString()}::${document.version}`;
+    }
+
+    private clearLensCache(): void {
+        this.lensCache.clear();
+    }
+
+    private schedulePrewarmVisibleEditors(): void {
+        if (this.disposed) {
+            return;
+        }
+        if (this.prewarmTimer) {
+            return;
+        }
+
+        this.prewarmTimer = setTimeout(() => {
+            this.prewarmTimer = undefined;
+            void this.prewarmVisibleEditors();
+        }, this.prewarmDelayMs);
+    }
+
+    private async prewarmVisibleEditors(): Promise<void> {
+        if (this.disposed || !this.diffTracker.getIsRecording()) {
+            return;
+        }
+
+        const config = vscode.workspace.getConfiguration('diffTracker');
+        if (!config.get<boolean>('showCodeLens', true)) {
+            return;
+        }
+
+        const seen = new Set<string>();
+        for (const editor of vscode.window.visibleTextEditors) {
+            if (this.disposed) {
+                return;
+            }
+
+            const document = editor.document;
+            if (document.uri.scheme !== 'file') {
+                continue;
+            }
+
+            const uriKey = document.uri.toString();
+            if (seen.has(uriKey)) {
+                continue;
+            }
+            seen.add(uriKey);
+
+            const cacheKey = this.getCacheKey(document);
+            if (this.lensCache.has(cacheKey)) {
+                continue;
+            }
+
+            try {
+                await vscode.commands.executeCommand<vscode.CodeLens[]>(
+                    'vscode.executeCodeLensProvider',
+                    document.uri
+                );
+            } catch {
+                // Ignore prewarm failures and let normal pull-based rendering continue.
+            }
+        }
     }
 }

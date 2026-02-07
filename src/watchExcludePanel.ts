@@ -78,7 +78,6 @@ export class WatchExcludePanel {
 
     private getHtmlContent(): string {
         const webview = this.panel.webview;
-        const nonce = this.getNonce();
         const cspSource = webview.cspSource;
         const scriptUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this.extensionUri, 'webview', 'watchExcludePanel.js')
@@ -195,15 +194,6 @@ export class WatchExcludePanel {
     <script src="${scriptUri}"></script>
 </body>
 </html>`;
-    }
-
-    private getNonce(): string {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        let value = '';
-        for (let i = 0; i < 32; i++) {
-            value += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        return value;
     }
 
     public dispose(): void {

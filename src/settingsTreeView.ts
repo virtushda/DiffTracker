@@ -62,6 +62,7 @@ type SettingGroup = {
 export class SettingsTreeDataProvider implements vscode.TreeDataProvider<SettingItem | SettingGroupItem | SettingActionItem> {
     private _onDidChangeTreeData = new vscode.EventEmitter<SettingItem | SettingGroupItem | SettingActionItem | undefined>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+    private configurationChangeDisposable: vscode.Disposable;
 
     private settings: SettingGroup[] = [
         {
@@ -90,7 +91,7 @@ export class SettingsTreeDataProvider implements vscode.TreeDataProvider<Setting
 
     constructor() {
         // Refresh when settings change
-        vscode.workspace.onDidChangeConfiguration(e => {
+        this.configurationChangeDisposable = vscode.workspace.onDidChangeConfiguration(e => {
             if (e.affectsConfiguration('diffTracker')) {
                 this.refresh();
             }
@@ -174,6 +175,7 @@ export class SettingsTreeDataProvider implements vscode.TreeDataProvider<Setting
     }
 
     public dispose(): void {
+        this.configurationChangeDisposable.dispose();
         this._onDidChangeTreeData.dispose();
     }
 }
