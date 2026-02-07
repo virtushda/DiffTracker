@@ -1,5 +1,17 @@
 import * as vscode from 'vscode';
-import { DiffTracker } from './diffTracker';
+import { ChangeBlock, DiffTracker } from './diffTracker';
+
+type WebviewChangeBlockPayload = {
+    blockId: string;
+    blockIndex: number;
+    startLine: number;
+    endLine: number;
+    type: 'added' | 'modified' | 'deleted';
+    originalStartLine: number;
+    originalEndLine: number;
+    currentLineNumbers: number[];
+    originalLineNumbers: number[];
+};
 
 /**
  * Manages a WebviewPanel for displaying diffs using @pierre/diffs library
@@ -121,7 +133,7 @@ export class WebviewDiffPanel {
             const doc = vscode.workspace.textDocuments.find(d => d.uri.fsPath === this.filePath);
             currentContent = doc?.getText() ?? originalContent;
         }
-        const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath);
+        const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath).map(block => this.serializeChangeBlock(block));
         const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
         const lang = this.getLangForFileName(fileName);
 
@@ -132,18 +144,7 @@ export class WebviewDiffPanel {
             lang,
             oldContents: originalContent,
             newContents: currentContent,
-            changeBlocks: changeBlocks.map(b => {
-                const originalRange = this.getOriginalRangeForBlock(b);
-                return {
-                    originalStartLine: originalRange.startLine,
-                    originalEndLine: originalRange.endLine,
-                    blockId: b.blockId,
-                    startLine: b.startLine,
-                    endLine: b.endLine,
-                    type: b.type,
-                    blockIndex: b.blockIndex
-                };
-            }),
+            changeBlocks,
             style: this.currentStyle,
             wrap: this.currentWrap,
             expandAll: this.currentExpandAll
@@ -282,19 +283,8 @@ export class WebviewDiffPanel {
         const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
 
         // Get change blocks from diffTracker - this is the source of truth for block indexing
-        const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath);
-        const changeBlocksJson = JSON.stringify(changeBlocks.map(b => {
-            const originalRange = this.getOriginalRangeForBlock(b);
-            return {
-                originalStartLine: originalRange.startLine,
-                originalEndLine: originalRange.endLine,
-                blockId: b.blockId,
-                startLine: b.startLine,
-                endLine: b.endLine,
-                type: b.type,
-                blockIndex: b.blockIndex
-            };
-        }));
+        const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath).map(block => this.serializeChangeBlock(block));
+        const changeBlocksJson = JSON.stringify(changeBlocks);
 
         // Detect language from file extension
         const lang = this.getLangForFileName(fileName);
@@ -519,64 +509,199 @@ export class WebviewDiffPanel {
         let fileDiffInstance = null;
         let fileDiffMeta = null;
 
+        const DEBUG_BLOCK_ANNOTATION = false;
+
+        function debugBlockAnnotation(message, data) {
+            if (!DEBUG_BLOCK_ANNOTATION) {
+                return;
+            }
+            console.debug('[diff-tracker][block-annotation]', message, data);
+        }
+
+        function toPositiveInt(value) {
+            const num = Number(value);
+            if (!Number.isFinite(num)) {
+                return undefined;
+            }
+            const int = Math.trunc(num);
+            return int > 0 ? int : undefined;
+        }
+
+        function uniqueSortedPositiveNumbers(values) {
+            if (!Array.isArray(values)) {
+                return [];
+            }
+            const unique = new Set();
+            values.forEach(value => {
+                const int = toPositiveInt(value);
+                if (int !== undefined) {
+                    unique.add(int);
+                }
+            });
+            return [...unique].sort((a, b) => a - b);
+        }
+
         function clampLineNumber(lineNumber, totalLines) {
             if (totalLines <= 0) {
                 return 1;
             }
-            return Math.max(1, Math.min(lineNumber, totalLines));
+            const normalized = toPositiveInt(lineNumber) ?? 1;
+            return Math.max(1, Math.min(normalized, totalLines));
         }
 
-        function getAnnotationLineForBlock(block, totalLines, hasTrailingEmptyLine, newFileLines) {
-            // Helper to find the last non-empty line starting from a given line
-            function findLastNonEmptyLine(startLine) {
-                for (let i = startLine; i >= 1; i--) {
-                    if (newFileLines[i - 1] && newFileLines[i - 1].trim() !== '') {
-                        return i;
-                    }
+        function getSideLineCount(diffMeta, side) {
+            const lines = side === 'additions' ? diffMeta?.newLines : diffMeta?.oldLines;
+            return Array.isArray(lines) ? lines.length : 0;
+        }
+
+        function getHunkSideRange(hunk, side, sideLineCount) {
+            if (!hunk || sideLineCount <= 0) {
+                return undefined;
+            }
+            const start = toPositiveInt(side === 'additions' ? hunk.additionStart : hunk.deletionStart);
+            const count = toPositiveInt(side === 'additions' ? hunk.additionCount : hunk.deletionCount);
+            if (start === undefined || count === undefined) {
+                return undefined;
+            }
+            const end = start + count - 1;
+            if (end < 1 || start > sideLineCount) {
+                return undefined;
+            }
+            return {
+                start: clampLineNumber(start, sideLineCount),
+                end: clampLineNumber(end, sideLineCount)
+            };
+        }
+
+        function findHunkForBlock(block, diffMeta, side) {
+            if (!diffMeta || !Array.isArray(diffMeta.hunks) || diffMeta.hunks.length === 0) {
+                return undefined;
+            }
+
+            const rangeStart = toPositiveInt(
+                side === 'additions'
+                    ? block.startLine
+                    : (block.originalStartLine ?? block.originalEndLine)
+            );
+            const rangeEnd = toPositiveInt(
+                side === 'additions'
+                    ? block.endLine
+                    : (block.originalEndLine ?? block.originalStartLine)
+            ) ?? rangeStart;
+
+            if (rangeStart === undefined || rangeEnd === undefined) {
+                return undefined;
+            }
+
+            return diffMeta.hunks.find(hunk => {
+                const start = toPositiveInt(side === 'additions' ? hunk.additionStart : hunk.deletionStart);
+                const count = toPositiveInt(side === 'additions' ? hunk.additionCount : hunk.deletionCount);
+                if (start === undefined || count === undefined) {
+                    return false;
                 }
-                // If all lines are empty, return line 1
-                return 1;
+                const end = start + count - 1;
+                return rangeStart <= end && rangeEnd >= start;
+            });
+        }
+
+        function resolveBlockAnnotation(block, diffMeta) {
+            if (!block || typeof block.blockId !== 'string') {
+                return undefined;
             }
 
-            // Helper to check if a line is empty or non-existent
-            function isEmptyLine(lineNum) {
-                if (lineNum < 1 || lineNum > totalLines) return true;
-                return !newFileLines[lineNum - 1] || newFileLines[lineNum - 1].trim() === '';
-            }
+            const side = block.type === 'deleted' ? 'deletions' : 'additions';
+            const currentLineNumbers = uniqueSortedPositiveNumbers(block.currentLineNumbers);
+            const originalLineNumbers = uniqueSortedPositiveNumbers(block.originalLineNumbers);
 
-            if (block.type !== 'deleted') {
-                let targetLine = clampLineNumber(block.endLine, totalLines);
-                
-                // If the block ends at or past EOF, or the target line is empty,
-                // find the last non-empty line to anchor the annotation
-                if (block.endLine >= totalLines || isEmptyLine(targetLine) || (hasTrailingEmptyLine && block.endLine === totalLines)) {
-                    // Always use the last content line for EOF/empty line blocks
-                    targetLine = findLastNonEmptyLine(totalLines);
+            if (side === 'additions') {
+                if (currentLineNumbers.length > 0) {
+                    return {
+                        side,
+                        lineNumber: currentLineNumbers[currentLineNumbers.length - 1],
+                        strategy: 'block.currentLineNumbers.last'
+                    };
                 }
-                
-                return clampLineNumber(targetLine, totalLines);
+
+                const fallbackLine = toPositiveInt(block.endLine) ?? toPositiveInt(block.startLine) ?? 1;
+                return {
+                    side,
+                    lineNumber: fallbackLine,
+                    strategy: 'block.endLine'
+                };
             }
 
-            // For deleted blocks, show on the line immediately after the deletion.
-            // The current block endLine tends to be one line below the desired target,
-            // so shift up by one.
-            let targetLine = block.endLine - 1;
-
-            // If deletion is at EOF or target is empty, place on the last non-empty line
-            if (targetLine >= totalLines || isEmptyLine(targetLine)) {
-                targetLine = findLastNonEmptyLine(totalLines);
+            if (originalLineNumbers.length > 0) {
+                return {
+                    side,
+                    lineNumber: originalLineNumbers[originalLineNumbers.length - 1],
+                    strategy: 'block.originalLineNumbers.last'
+                };
             }
 
-            return clampLineNumber(targetLine, totalLines);
+            const fallbackLine = toPositiveInt(block.originalEndLine)
+                ?? toPositiveInt(block.originalStartLine)
+                ?? 1;
+            return {
+                side,
+                lineNumber: fallbackLine,
+                strategy: 'block.originalEndLine'
+            };
+        }
+
+        function validateAnnotationTarget(annotation, block, diffMeta) {
+            if (!annotation) {
+                return undefined;
+            }
+
+            const sideLineCount = getSideLineCount(diffMeta, annotation.side);
+            if (sideLineCount <= 0) {
+                return undefined;
+            }
+
+            const target = toPositiveInt(annotation.lineNumber);
+            if (target !== undefined && target <= sideLineCount) {
+                return {
+                    ...annotation,
+                    lineNumber: target,
+                    strategy: annotation.strategy + ' -> direct'
+                };
+            }
+
+            const hunk = findHunkForBlock(block, diffMeta, annotation.side);
+            const hunkRange = getHunkSideRange(hunk, annotation.side, sideLineCount);
+            if (hunkRange) {
+                const base = target ?? hunkRange.end;
+                const lineNumber = Math.max(hunkRange.start, Math.min(base, hunkRange.end));
+                return {
+                    ...annotation,
+                    lineNumber,
+                    strategy: annotation.strategy + ' -> hunk-range'
+                };
+            }
+
+            const candidates = annotation.side === 'additions'
+                ? uniqueSortedPositiveNumbers(block.currentLineNumbers)
+                : uniqueSortedPositiveNumbers(block.originalLineNumbers);
+            const inRangeCandidates = candidates.filter(line => line >= 1 && line <= sideLineCount);
+            if (inRangeCandidates.length > 0) {
+                return {
+                    ...annotation,
+                    lineNumber: inRangeCandidates[inRangeCandidates.length - 1],
+                    strategy: annotation.strategy + ' -> block-candidate'
+                };
+            }
+
+            return {
+                ...annotation,
+                lineNumber: clampLineNumber(target ?? 1, sideLineCount),
+                strategy: annotation.strategy + ' -> global-clamp'
+            };
         }
 
         // Create annotations based on diffTracker blocks, not diffs.com ChangeContent
-        function getBlockAnnotations() {
+        function getBlockAnnotations(diffMeta) {
             const annotations = [];
             const seenBlockIds = new Set();
-            const newFileLines = newFile.contents.split('\\n');
-            const totalNewLines = newFileLines.length;
-            const hasTrailingEmptyLine = newFileLines[newFileLines.length - 1] === '';
             
             changeBlocks.forEach((block) => {
                 if (!block || typeof block.blockId !== 'string' || seenBlockIds.has(block.blockId)) {
@@ -584,24 +709,34 @@ export class WebviewDiffPanel {
                 }
                 seenBlockIds.add(block.blockId);
 
-                let side = 'additions';
-                let lineNumber = getAnnotationLineForBlock(block, totalNewLines, hasTrailingEmptyLine, newFileLines);
-
-                if (block.type === 'deleted') {
-                    // Deletion-only hunks should annotate the deletions side, especially when new file is empty.
-                    side = 'deletions';
-                    const endOnOriginal = typeof block.originalEndLine === 'number' && block.originalEndLine > 0
-                        ? block.originalEndLine
-                        : (typeof block.originalStartLine === 'number' && block.originalStartLine > 0 ? block.originalStartLine : 1);
-                    lineNumber = Math.max(1, endOnOriginal);
+                const resolved = resolveBlockAnnotation(block, diffMeta);
+                if (!resolved) {
+                    debugBlockAnnotation('resolve failed', { blockId: block.blockId });
+                    return;
                 }
-                
+
+                const validated = validateAnnotationTarget(resolved, block, diffMeta);
+                if (!validated) {
+                    debugBlockAnnotation('validate failed', {
+                        blockId: block.blockId,
+                        resolved
+                    });
+                    return;
+                }
+
+                debugBlockAnnotation('resolved', {
+                    blockId: block.blockId,
+                    resolved,
+                    validated
+                });
+
                 annotations.push({
-                    side: side,
-                    lineNumber: lineNumber,
+                    side: validated.side,
+                    lineNumber: validated.lineNumber,
                     metadata: { 
                         blockId: block.blockId,
-                        blockIndex: block.blockIndex
+                        blockIndex: block.blockIndex,
+                        strategy: validated.strategy
                     }
                 });
             });
@@ -660,7 +795,7 @@ export class WebviewDiffPanel {
             fileDiffMeta = parseDiffFromFile(oldFile, newFile);
             
             // Use diffTracker blocks for annotations
-            const blockAnnotations = getBlockAnnotations();
+            const blockAnnotations = getBlockAnnotations(fileDiffMeta);
             
             const annotationsToRender = blockAnnotations;
 
@@ -776,6 +911,32 @@ export class WebviewDiffPanel {
         }
 
         return { startLine: lines[0], endLine: lines[lines.length - 1] };
+    }
+
+    private serializeChangeBlock(block: ChangeBlock): WebviewChangeBlockPayload {
+        const originalRange = this.getOriginalRangeForBlock(block);
+        const currentLineNumbers = [...new Set(
+            block.changes
+                .map(change => change.lineNumber)
+                .filter(lineNumber => Number.isFinite(lineNumber) && lineNumber > 0)
+        )].sort((a, b) => a - b);
+        const originalLineNumbers = [...new Set(
+            block.changes
+                .map(change => change.originalLineNumber)
+                .filter((lineNumber): lineNumber is number => lineNumber !== undefined && Number.isFinite(lineNumber) && lineNumber > 0)
+        )].sort((a, b) => a - b);
+
+        return {
+            originalStartLine: originalRange.startLine,
+            originalEndLine: originalRange.endLine,
+            blockId: block.blockId,
+            startLine: block.startLine,
+            endLine: block.endLine,
+            type: block.type,
+            blockIndex: block.blockIndex,
+            currentLineNumbers,
+            originalLineNumbers
+        };
     }
 
     public dispose(): void {

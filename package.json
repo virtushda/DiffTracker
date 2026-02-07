@@ -296,6 +296,7 @@
     "build:webview": "node esbuild.webview.js",
     "watch": "tsc -watch -p ./",
     "pretest": "npm run compile",
+    "test:webview-anchors": "node test/webview-annotation-mapping.mjs",
     "lint": "eslint src --ext ts",
     "package": "vsce package"
   },
