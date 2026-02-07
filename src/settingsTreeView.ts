@@ -59,8 +59,8 @@ type SettingGroup = {
 /**
  * Provides the settings tree view in the sidebar
  */
-export class SettingsTreeDataProvider implements vscode.TreeDataProvider<SettingItem | SettingGroupItem> {
-    private _onDidChangeTreeData = new vscode.EventEmitter<SettingItem | SettingGroupItem | undefined>();
+export class SettingsTreeDataProvider implements vscode.TreeDataProvider<SettingItem | SettingGroupItem | SettingActionItem> {
+    private _onDidChangeTreeData = new vscode.EventEmitter<SettingItem | SettingGroupItem | SettingActionItem | undefined>();
     readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
     private settings: SettingGroup[] = [
@@ -127,6 +127,32 @@ export class SettingsTreeDataProvider implements vscode.TreeDataProvider<Setting
                     },
                     'filter'
                 )
+            ];
+        }
+
+        if (group.id === 'display') {
+            const defaultOpenMode = config.get<string>('defaultOpenMode', 'webview');
+            const modeLabelMap: { [key: string]: string } = {
+                webview: 'Webview',
+                inline: 'Inline (read-only)',
+                sideBySide: 'Side-by-Side',
+                original: 'Original'
+            };
+            const modeLabel = modeLabelMap[defaultOpenMode] ?? 'Webview';
+
+            return [
+                new SettingActionItem(
+                    `Default open mode: ${modeLabel}`,
+                    {
+                        command: 'diffTracker.selectDefaultOpenMode',
+                        title: 'Select Default Open Mode'
+                    },
+                    'preview'
+                ),
+                ...group.items.map(setting => {
+                    const value = config.get<boolean>(setting.key, true);
+                    return new SettingItem(setting.key, setting.label, value);
+                })
             ];
         }
 

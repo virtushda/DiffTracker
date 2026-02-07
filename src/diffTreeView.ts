@@ -72,10 +72,10 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
         item.iconPath = this.getFileIcon(fileDiff.fileName);
         item.tooltip = fileDiff.filePath;
 
-        // Add inline diff command
+        // Open with configured default mode
         item.command = {
-            command: 'diffTracker.showInlineDiff',
-            title: 'Show Inline Diff',
+            command: 'diffTracker.openDiffDefault',
+            title: 'Open Diff',
             arguments: [fileDiff.filePath]
         };
 
