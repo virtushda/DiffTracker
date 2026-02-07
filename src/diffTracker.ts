@@ -729,6 +729,27 @@ export class DiffTracker {
         return revertedCount;
     }
 
+    public async keepAllChanges(): Promise<number> {
+        const changes = Array.from(this.trackedChanges.values());
+        if (changes.length === 0) {
+            return 0;
+        }
+
+        let acceptedCount = 0;
+        for (const change of changes) {
+            const doc = vscode.workspace.textDocuments.find(textDoc => textDoc.uri.fsPath === change.filePath);
+            const currentContent = doc?.getText() ?? change.currentContent;
+            this.fileSnapshots.set(change.filePath, currentContent);
+            acceptedCount++;
+        }
+
+        this.trackedChanges.clear();
+        this.lineChanges.clear();
+        this.inlineViews.clear();
+        this._onDidTrackChanges.fire();
+        return acceptedCount;
+    }
+
     public async revertFile(filePath: string): Promise<boolean> {
         const change = this.trackedChanges.get(filePath);
         if (!change) {

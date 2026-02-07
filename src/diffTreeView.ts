@@ -35,7 +35,6 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
                 return Promise.resolve([emptyItem]);
             }
 
-            // Add "Revert All Changes" button at top
             const revertButton = new TreeItem('Revert All Changes', vscode.TreeItemCollapsibleState.None);
             revertButton.command = {
                 command: 'diffTracker.revertAllChanges',
@@ -45,6 +44,22 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem> {
             revertButton.tooltip = `Restore all ${changes.length} file(s) to original state`;
             revertButton.description = `${changes.length} file(s)`;
             items.push(revertButton);
+
+            const keepButton = new TreeItem('Accept All Changes', vscode.TreeItemCollapsibleState.None);
+            keepButton.command = {
+                command: 'diffTracker.keepAllChanges',
+                title: 'Accept All Changes'
+            };
+            keepButton.iconPath = new vscode.ThemeIcon('check');
+            keepButton.tooltip = `Accept all ${changes.length} file(s) as new baseline`;
+            keepButton.description = `${changes.length} file(s)`;
+            items.push(keepButton);
+
+            const actionsHeader = new TreeItem('Actions', vscode.TreeItemCollapsibleState.None);
+            actionsHeader.tooltip = 'Action shortcuts';
+            actionsHeader.iconPath = new vscode.ThemeIcon('tools');
+            actionsHeader.description = '';
+            items.push(actionsHeader);
 
             const rootNode: DirNode = {
                 name: '',

@@ -244,6 +244,20 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     context.subscriptions.push(
+        vscode.commands.registerCommand('diffTracker.keepAllChanges', async () => {
+            const changes = diffTracker.getTrackedChanges();
+            if (changes.length === 0) {
+                return;
+            }
+
+            const acceptedCount = await diffTracker.keepAllChanges();
+            refreshChangesTree();
+            decorationManager.clearAllDecorations();
+            vscode.window.showInformationMessage(`Accepted ${acceptedCount} file(s)`);
+        })
+    );
+
+    context.subscriptions.push(
         vscode.commands.registerCommand('diffTracker.revertFile', async (filePathOrItem: string | any) => {
             const filePath = typeof filePathOrItem === 'string'
                 ? filePathOrItem
