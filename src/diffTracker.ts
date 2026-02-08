@@ -96,6 +96,10 @@ export class DiffTracker {
         );
 
         this.disposables.push(
+            vscode.workspace.onDidOpenTextDocument(this.onDocumentOpened, this)
+        );
+
+        this.disposables.push(
             vscode.workspace.onDidChangeConfiguration(e => {
                 if (
                     e.affectsConfiguration('diffTracker.watchExclude') ||
@@ -125,9 +129,7 @@ export class DiffTracker {
         this._onDidChangeBaselineState.fire('building');
 
         vscode.workspace.textDocuments.forEach(doc => {
-            if (doc.uri.scheme === 'file') {
-                this.fileSnapshots.set(doc.uri.fsPath, doc.getText());
-            }
+            this.ensureSnapshotForDocument(doc);
         });
 
         this.startExternalWatchers();
@@ -189,9 +191,7 @@ export class DiffTracker {
         try {
             // Open editors may be ahead of on-disk state; use their in-memory text as baseline.
             vscode.workspace.textDocuments.forEach(doc => {
-                if (doc.uri.scheme === 'file') {
-                    this.fileSnapshots.set(doc.uri.fsPath, doc.getText());
-                }
+                this.ensureSnapshotForDocument(doc);
             });
 
             await this.initializeWorkspaceSnapshots();
@@ -709,6 +709,10 @@ export class DiffTracker {
         }, 120);
 
         this.externalChangeTimers.set(filePath, timer);
+    }
+
+    private onDocumentOpened(doc: vscode.TextDocument): void {
+        this.ensureSnapshotForDocument(doc);
     }
 
     private async onExternalFileCreated(uri: vscode.Uri): Promise<void> {
@@ -1401,6 +1405,7 @@ export class DiffTracker {
         // We do this immediately (before debounce) to avoid autosave overwriting
         // the on-disk content and erasing the true baseline.
         if (!this.fileSnapshots.has(filePath)) {
+            // Defensive fallback: normal path should be covered by start/open snapshot capture.
             try {
                 const originalContent = fs.readFileSync(filePath, 'utf8');
                 this.fileSnapshots.set(filePath, originalContent);
@@ -1470,6 +1475,27 @@ export class DiffTracker {
 
         const doc = vscode.workspace.textDocuments.find(textDoc => textDoc.uri.fsPath === filePath);
         return doc?.getText();
+    }
+
+    private ensureSnapshotForDocument(doc: vscode.TextDocument): void {
+        if (!this.isRecording) {
+            return;
+        }
+
+        if (doc.uri.scheme !== 'file') {
+            return;
+        }
+
+        const filePath = doc.uri.fsPath;
+        if (this.fileSnapshots.has(filePath)) {
+            return;
+        }
+
+        if (this.isPathIgnored(doc.uri)) {
+            return;
+        }
+
+        this.fileSnapshots.set(filePath, doc.getText());
     }
 
     private calculateLineChanges(filePath: string) {
