@@ -314,10 +314,10 @@ export class WebviewDiffPanel {
         const logicalOriginalContent = this.toLogicalDiffContent(originalContent);
         const logicalCurrentContent = this.toLogicalDiffContent(currentContent);
         const fileName = this.filePath.split('/').pop() || this.filePath.split('\\').pop() || 'file';
+        const escapedFileName = this.escapeHtml(fileName);
 
         // Get change blocks from diffTracker - this is the source of truth for block indexing
         const changeBlocks = this.diffTracker.getChangeBlocks(this.filePath).map(block => this.serializeChangeBlock(block));
-        const changeBlocksJson = JSON.stringify(changeBlocks);
 
         // Detect language from file extension
         const lang = this.getLangForFileName(fileName);
@@ -325,16 +325,15 @@ export class WebviewDiffPanel {
         // Determine initial theme
         const themeKind = vscode.window.activeColorTheme.kind;
         const initialThemeType = themeKind === vscode.ColorThemeKind.Light ? 'light' : 'dark';
-
-        // Escape content for embedding in script
-        const escapeForJs = (str: string) => {
-            return str
-                .replace(/\\/g, '\\\\')
-                .replace(/`/g, '\\`')
-                .replace(/\$/g, '\\$');
-        };
-
-        const escapedFilePath = this.filePath.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        const serializedFilePath = this.serializeForInlineScript(this.filePath);
+        const serializedFileName = this.serializeForInlineScript(fileName);
+        const serializedOriginalContent = this.serializeForInlineScript(logicalOriginalContent);
+        const serializedCurrentContent = this.serializeForInlineScript(logicalCurrentContent);
+        const serializedLang = this.serializeForInlineScript(lang);
+        const serializedChangeBlocks = this.serializeForInlineScript(changeBlocks);
+        const serializedInitialStyle = this.serializeForInlineScript(this.currentStyle);
+        const serializedInitialWrap = this.serializeForInlineScript(this.currentWrap);
+        const serializedInitialExpandAll = this.serializeForInlineScript(this.currentExpandAll);
         const diffsBundleUri = webview.asWebviewUri(
             vscode.Uri.joinPath(this.extensionUri, 'webview', 'diffs-bundle.js')
         );
@@ -501,7 +500,7 @@ export class WebviewDiffPanel {
 </head>
 <body>
     <div class="toolbar">
-        <span class="filename">${this.escapeHtml(fileName)}</span>
+        <span class="filename">${escapedFileName}</span>
         <div class="spacer"></div>
         <button id="btn-split" class="secondary">Split</button>
         <button id="btn-unified" class="secondary">Unified</button>
@@ -530,26 +529,26 @@ export class WebviewDiffPanel {
         const btnKeepAll = document.getElementById('btn-keep-all');
         const btnRejectAll = document.getElementById('btn-reject-all');
 
-        let filePath = '${escapedFilePath}';
+        let filePath = ${serializedFilePath};
 
         const oldFile = {
-            name: '${this.escapeHtml(fileName)}',
-            contents: \`${escapeForJs(logicalOriginalContent)}\`,
-            lang: '${lang}'
+            name: ${serializedFileName},
+            contents: ${serializedOriginalContent},
+            lang: ${serializedLang}
         };
 
         const newFile = {
-            name: '${this.escapeHtml(fileName)}',
-            contents: \`${escapeForJs(logicalCurrentContent)}\`,
-            lang: '${lang}'
+            name: ${serializedFileName},
+            contents: ${serializedCurrentContent},
+            lang: ${serializedLang}
         };
 
         // Change blocks from diffTracker - source of truth for indexing
-        let changeBlocks = ${changeBlocksJson};
+        let changeBlocks = ${serializedChangeBlocks};
 
-        let currentStyle = 'unified';
-        let currentWrap = false;
-        let currentExpandAll = false;
+        let currentStyle = ${serializedInitialStyle};
+        let currentWrap = ${serializedInitialWrap};
+        let currentExpandAll = ${serializedInitialExpandAll};
         let fileDiffInstance = null;
         let fileDiffMeta = null;
         let pendingMutationRequestId = null;
@@ -1066,7 +1065,7 @@ export class WebviewDiffPanel {
         });
 
         // Initial render
-        renderDiff('unified');
+        renderDiff(currentStyle);
     </script>
 </body>
 </html>`;
@@ -1091,6 +1090,15 @@ export class WebviewDiffPanel {
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#039;');
+    }
+
+    private serializeForInlineScript(value: unknown): string {
+        return JSON.stringify(value)
+            .replace(/</g, '\\u003C')
+            .replace(/>/g, '\\u003E')
+            .replace(/&/g, '\\u0026')
+            .replace(/\u2028/g, '\\u2028')
+            .replace(/\u2029/g, '\\u2029');
     }
 
     private getOriginalRangeForBlock(block: { changes: Array<{ originalLineNumber?: number }> }): { startLine: number; endLine: number } {
