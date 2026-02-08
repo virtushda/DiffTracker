@@ -592,10 +592,38 @@ export class DiffTracker {
                 return null;
             }
             const content = await vscode.workspace.fs.readFile(uri);
+            if (this.isLikelyBinaryContent(content)) {
+                return null;
+            }
             return new TextDecoder('utf-8').decode(content);
         } catch {
             return null;
         }
+    }
+
+    private isLikelyBinaryContent(content: Uint8Array): boolean {
+        if (content.length === 0) {
+            return false;
+        }
+
+        const sampleSize = Math.min(content.length, 8192);
+        let nonPrintableCount = 0;
+
+        for (let i = 0; i < sampleSize; i++) {
+            const byte = content[i];
+
+            if (byte === 0x00) {
+                return true;
+            }
+
+            const isAsciiControl = byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d;
+            const isDel = byte === 0x7f;
+            if (isAsciiControl || isDel) {
+                nonPrintableCount++;
+            }
+        }
+
+        return nonPrintableCount / sampleSize > 0.3;
     }
 
     private async runWithConcurrency<T>(
