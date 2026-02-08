@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { DiffTracker } from './diffTracker';
+import { DiffTracker, TrackChangesEvent } from './diffTracker';
 import { DecorationManager } from './decorationManager';
 import { DiffTreeDataProvider } from './diffTreeView';
 import { DiffHoverProvider } from './hoverProvider';
@@ -97,18 +97,11 @@ export function activate(context: vscode.ExtensionContext) {
     const startRecordingFlow = () => {
         diffTracker.startRecording();
         void vscode.commands.executeCommand('setContext', 'diffTracker.isRecording', true);
-        refreshChangesTree();
-
-        if (vscode.window.activeTextEditor) {
-            decorationManager.updateDecorations(vscode.window.activeTextEditor);
-        }
     };
 
     const stopRecordingFlow = () => {
         diffTracker.stopRecording();
         void vscode.commands.executeCommand('setContext', 'diffTracker.isRecording', false);
-        refreshChangesTree();
-        decorationManager.clearAllDecorations();
     };
 
     // Register toggle setting command
@@ -540,22 +533,37 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
-    const updateVisibleDecorations = () => {
+    const updateVisibleDecorations = (affectedFiles?: Set<string>) => {
         vscode.window.visibleTextEditors.forEach(editor => {
+            if (
+                affectedFiles &&
+                editor.document.uri.scheme === 'file' &&
+                !affectedFiles.has(editor.document.uri.fsPath)
+            ) {
+                return;
+            }
             decorationManager.updateDecorations(editor);
         });
     };
 
-    // Update decorations when recording state changes
-    diffTracker.onDidChangeRecordingState(() => {
-        refreshChangesTree();
-        updateVisibleDecorations();
-    });
-
     // Update decorations when changes are tracked
-    diffTracker.onDidTrackChanges(() => {
+    diffTracker.onDidTrackChanges((event: TrackChangesEvent) => {
         refreshChangesTree();
-        updateVisibleDecorations();
+
+        if (event.fullRefresh) {
+            updateVisibleDecorations();
+            return;
+        }
+
+        const affectedFiles = new Set<string>([
+            ...event.changedFiles,
+            ...event.removedFiles
+        ]);
+        if (affectedFiles.size === 0) {
+            return;
+        }
+
+        updateVisibleDecorations(affectedFiles);
     });
 
     refreshChangesTree();

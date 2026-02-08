@@ -40,6 +40,13 @@ export interface ChangeBlock {
     changes: LineChange[];
 }
 
+export interface TrackChangesEvent {
+    changedFiles: string[];
+    removedFiles: string[];
+    fullRefresh: boolean;
+    baselineChanged: boolean;
+}
+
 interface PendingRemovedLine {
     text: string;
     normalized: string;
@@ -76,7 +83,7 @@ export class DiffTracker {
     private externalChangeTimers = new Map<string, NodeJS.Timeout>();
     private documentChangeTimers = new Map<string, NodeJS.Timeout>();
     private readonly _onDidChangeRecordingState = new vscode.EventEmitter<boolean>();
-    private readonly _onDidTrackChanges = new vscode.EventEmitter<void>();
+    private readonly _onDidTrackChanges = new vscode.EventEmitter<TrackChangesEvent>();
     private readonly _onDidChangeBaselineState = new vscode.EventEmitter<'idle' | 'building' | 'ready'>();
 
     public readonly onDidChangeRecordingState = this._onDidChangeRecordingState.event;
@@ -105,6 +112,7 @@ export class DiffTracker {
     }
 
     public startRecording() {
+        const removedFiles = Array.from(this.trackedChanges.keys());
         this.isRecording = true;
         this.fileSnapshots.clear();
         this.clearTrackedChanges();
@@ -126,6 +134,11 @@ export class DiffTracker {
         this.initializeWorkspaceSnapshots();
 
         this._onDidChangeRecordingState.fire(true);
+        this.emitTrackChangesEvent({
+            removedFiles,
+            fullRefresh: true,
+            baselineChanged: true
+        });
     }
 
     public stopRecording() {
@@ -137,14 +150,19 @@ export class DiffTracker {
         this.disposeFileWatchers();
         this.resetChangeBlocksCaches();
         this._onDidChangeRecordingState.fire(false);
+        this.emitTrackChangesEvent({ fullRefresh: true });
     }
 
     public clearDiffs() {
+        const removedFiles = Array.from(this.trackedChanges.keys());
         this.clearTrackedChanges();
         this.lineChanges.clear();
         this.resetChangeBlocksCaches();
         this.inlineViews.clear();
-        this._onDidTrackChanges.fire();
+        this.emitTrackChangesEvent({
+            removedFiles,
+            fullRefresh: true
+        });
     }
 
     public async resetBaselineToCurrentState(): Promise<void> {
@@ -152,6 +170,8 @@ export class DiffTracker {
             this.clearDiffs();
             return;
         }
+
+        const removedFiles = Array.from(this.trackedChanges.keys());
 
         this.clearExternalChangeTimers();
         this.clearDocumentChangeTimers();
@@ -184,7 +204,11 @@ export class DiffTracker {
                 this.baselineBuilding = false;
                 this._onDidChangeBaselineState.fire('ready');
             }
-            this._onDidTrackChanges.fire();
+            this.emitTrackChangesEvent({
+                removedFiles,
+                fullRefresh: true,
+                baselineChanged: true
+            });
         }
     }
 
@@ -475,7 +499,7 @@ export class DiffTracker {
     }
 
     private pruneIgnoredTrackedChanges(): void {
-        let changed = false;
+        const removedFiles: string[] = [];
 
         for (const filePath of this.trackedChanges.keys()) {
             const uri = vscode.Uri.file(filePath);
@@ -484,12 +508,12 @@ export class DiffTracker {
                 this.lineChanges.delete(filePath);
                 this.markLineChangesUpdated(filePath);
                 this.inlineViews.delete(filePath);
-                changed = true;
+                removedFiles.push(filePath);
             }
         }
 
-        if (changed) {
-            this._onDidTrackChanges.fire();
+        if (removedFiles.length > 0) {
+            this.emitTrackChangesEvent({ removedFiles });
         }
     }
 
@@ -713,7 +737,14 @@ export class DiffTracker {
         }
     }
 
-    private updateTrackedDiff(filePath: string, currentContent: string): void {
+    private updateTrackedDiff(
+        filePath: string,
+        currentContent: string,
+        options?: { baselineChanged?: boolean }
+    ): void {
+        const hadTrackedChange = this.trackedChanges.has(filePath);
+        const hadLineChanges = this.lineChanges.has(filePath);
+        const hadInlineView = this.inlineViews.has(filePath);
         let originalContent = this.fileSnapshots.get(filePath);
         if (originalContent === undefined) {
             // Fallback baseline for unknown files
@@ -733,7 +764,13 @@ export class DiffTracker {
             this.lineChanges.delete(filePath);
             this.markLineChangesUpdated(filePath);
             this.inlineViews.delete(filePath);
-            this._onDidTrackChanges.fire();
+            const shouldNotify = hadTrackedChange || hadLineChanges || hadInlineView;
+            if (shouldNotify) {
+                this.emitTrackChangesEvent({
+                    removedFiles: [filePath],
+                    baselineChanged: options?.baselineChanged ?? false
+                });
+            }
             return;
         }
 
@@ -760,7 +797,10 @@ export class DiffTracker {
         });
 
         this.calculateLineChanges(filePath);
-        this._onDidTrackChanges.fire();
+        this.emitTrackChangesEvent({
+            changedFiles: [filePath],
+            baselineChanged: options?.baselineChanged ?? false
+        });
     }
 
     public async revertAllChanges(): Promise<number> {
@@ -798,7 +838,10 @@ export class DiffTracker {
         this.lineChanges.clear();
         this.resetChangeBlocksCaches();
         this.inlineViews.clear();
-        this._onDidTrackChanges.fire();
+        this.emitTrackChangesEvent({
+            removedFiles: changes.map(change => change.filePath),
+            baselineChanged: true
+        });
         return acceptedCount;
     }
 
@@ -817,7 +860,7 @@ export class DiffTracker {
         this.lineChanges.delete(filePath);
         this.markLineChangesUpdated(filePath);
         this.inlineViews.delete(filePath);
-        this._onDidTrackChanges.fire();
+        this.emitTrackChangesEvent({ removedFiles: [filePath] });
 
         return true;
     }
@@ -1032,7 +1075,7 @@ export class DiffTracker {
         this.fileSnapshots.set(filePath, newSnapshot);
 
         // Recompute diff against updated snapshot
-        this.updateTrackedDiff(filePath, currentText);
+        this.updateTrackedDiff(filePath, currentText, { baselineChanged: true });
         return true;
     }
 
@@ -1065,7 +1108,10 @@ export class DiffTracker {
         this.markLineChangesUpdated(filePath);
         this.inlineViews.delete(filePath);
 
-        this._onDidTrackChanges.fire();
+        this.emitTrackChangesEvent({
+            removedFiles: [filePath],
+            baselineChanged: true
+        });
         return true;
     }
 
@@ -2281,6 +2327,22 @@ export class DiffTracker {
     private markLineChangesUpdated(filePath: string): void {
         this.bumpLineChangesVersion(filePath);
         this.invalidateChangeBlocksCache(filePath);
+    }
+
+    private emitTrackChangesEvent(event: Partial<TrackChangesEvent>): void {
+        const normalizeFiles = (files: string[] | undefined): string[] => {
+            if (!files || files.length === 0) {
+                return [];
+            }
+            return [...new Set(files)];
+        };
+
+        this._onDidTrackChanges.fire({
+            changedFiles: normalizeFiles(event.changedFiles),
+            removedFiles: normalizeFiles(event.removedFiles),
+            fullRefresh: event.fullRefresh === true,
+            baselineChanged: event.baselineChanged === true
+        });
     }
 
     private setIgnoreResultCache(cacheKey: string, ignored: boolean): void {

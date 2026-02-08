@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { ChangeBlock, DiffTracker } from './diffTracker';
+import { ChangeBlock, DiffTracker, TrackChangesEvent } from './diffTracker';
 
 type WebviewChangeBlockPayload = {
     blockId: string;
@@ -68,8 +68,21 @@ export class WebviewDiffPanel {
 
         // Auto-refresh when diff changes (file edited, saved, etc.)
         this.disposables.push(
-            this.diffTracker.onDidTrackChanges(() => {
-                if (this.filePath) {
+            this.diffTracker.onDidTrackChanges((event: TrackChangesEvent) => {
+                if (!this.filePath) {
+                    return;
+                }
+
+                if (event.fullRefresh) {
+                    this.update(this.filePath);
+                    return;
+                }
+
+                const affectedFiles = new Set<string>([
+                    ...event.changedFiles,
+                    ...event.removedFiles
+                ]);
+                if (affectedFiles.has(this.filePath)) {
                     this.update(this.filePath);
                 }
             })

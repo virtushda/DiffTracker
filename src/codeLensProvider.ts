@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { DiffTracker } from './diffTracker';
+import { DiffTracker, TrackChangesEvent } from './diffTracker';
 
 /**
  * Provides CodeLens actions for change blocks
@@ -9,15 +9,32 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
     public readonly onDidChangeCodeLenses = this._onDidChangeCodeLenses.event;
     private lensCache = new Map<string, vscode.CodeLens[]>();
     private prewarmTimer: NodeJS.Timeout | undefined;
+    private pendingPrewarmFullRefresh = false;
+    private pendingPrewarmFiles = new Set<string>();
     private disposed = false;
     private readonly prewarmDelayMs = 20;
 
     constructor(private diffTracker: DiffTracker) {
         // Refresh CodeLens when diff changes
-        this.diffTracker.onDidTrackChanges(() => {
-            this.clearLensCache();
+        this.diffTracker.onDidTrackChanges((event: TrackChangesEvent) => {
+            if (event.fullRefresh) {
+                this.clearLensCache();
+                this._onDidChangeCodeLenses.fire();
+                this.schedulePrewarmVisibleEditors();
+                return;
+            }
+
+            const affectedFiles = new Set<string>([
+                ...event.changedFiles,
+                ...event.removedFiles
+            ]);
+            if (affectedFiles.size === 0) {
+                return;
+            }
+
+            this.invalidateLensCacheForFiles(affectedFiles);
             this._onDidChangeCodeLenses.fire();
-            this.schedulePrewarmVisibleEditors();
+            this.schedulePrewarmVisibleEditors(affectedFiles);
         });
     }
 
@@ -160,21 +177,50 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
         this.lensCache.clear();
     }
 
-    private schedulePrewarmVisibleEditors(): void {
+    private invalidateLensCacheForFiles(filePaths: Set<string>): void {
+        if (filePaths.size === 0) {
+            return;
+        }
+
+        const prefixes = Array.from(filePaths).map(filePath => `${vscode.Uri.file(filePath).toString()}::`);
+        for (const key of this.lensCache.keys()) {
+            if (prefixes.some(prefix => key.startsWith(prefix))) {
+                this.lensCache.delete(key);
+            }
+        }
+    }
+
+    private schedulePrewarmVisibleEditors(filePaths?: Set<string>): void {
         if (this.disposed) {
             return;
         }
+
+        if (filePaths && filePaths.size > 0) {
+            filePaths.forEach(filePath => this.pendingPrewarmFiles.add(filePath));
+        } else {
+            this.pendingPrewarmFullRefresh = true;
+        }
+
         if (this.prewarmTimer) {
             return;
         }
 
         this.prewarmTimer = setTimeout(() => {
             this.prewarmTimer = undefined;
-            void this.prewarmVisibleEditors();
+            const fullRefresh = this.pendingPrewarmFullRefresh;
+            const pendingFiles = new Set(this.pendingPrewarmFiles);
+            this.pendingPrewarmFullRefresh = false;
+            this.pendingPrewarmFiles.clear();
+
+            if (fullRefresh) {
+                void this.prewarmVisibleEditors();
+                return;
+            }
+            void this.prewarmVisibleEditors(pendingFiles);
         }, this.prewarmDelayMs);
     }
 
-    private async prewarmVisibleEditors(): Promise<void> {
+    private async prewarmVisibleEditors(filePaths?: Set<string>): Promise<void> {
         if (this.disposed || !this.diffTracker.getIsRecording()) {
             return;
         }
@@ -192,6 +238,10 @@ export class DiffCodeLensProvider implements vscode.CodeLensProvider {
 
             const document = editor.document;
             if (document.uri.scheme !== 'file') {
+                continue;
+            }
+
+            if (filePaths && filePaths.size > 0 && !filePaths.has(document.uri.fsPath)) {
                 continue;
             }
 
