@@ -383,18 +383,23 @@ export class DecorationManager {
     }
 
     private isEditorInDiffView(editor: vscode.TextEditor): boolean {
-        const activeGroup = vscode.window.tabGroups.activeTabGroup;
-        const activeTab = activeGroup?.activeTab;
-        if (!activeTab) {
-            return false;
-        }
-
-        const input = activeTab.input;
-        if (!(input instanceof vscode.TabInputTextDiff)) {
-            return false;
-        }
-
         const targetUri = editor.document.uri.toString();
-        return input.original.toString() === targetUri || input.modified.toString() === targetUri;
+        for (const group of vscode.window.tabGroups.all) {
+            const activeTab = group.activeTab;
+            if (!activeTab) {
+                continue;
+            }
+
+            const input = activeTab.input;
+            if (!(input instanceof vscode.TabInputTextDiff)) {
+                continue;
+            }
+
+            if (input.original.toString() === targetUri || input.modified.toString() === targetUri) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
