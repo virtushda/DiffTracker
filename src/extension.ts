@@ -568,6 +568,12 @@ export function activate(context: vscode.ExtensionContext) {
         })
     );
 
+    context.subscriptions.push(
+        diffTracker.onDidChangeBaselineState(() => {
+            refreshChangesTree();
+        })
+    );
+
     refreshChangesTree();
 
     // Register disposables

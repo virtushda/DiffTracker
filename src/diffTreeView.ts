@@ -28,11 +28,12 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem>, 
         // Root level - show files
         if (!element) {
             const changes = this.diffTracker.getTrackedChanges();
+            items.push(this.createRecordingItem());
 
             if (changes.length === 0) {
                 const emptyItem = new TreeItem('No changes tracked', vscode.TreeItemCollapsibleState.None);
                 emptyItem.description = this.diffTracker.getIsRecording() ? 'Make some edits...' : 'Start recording to track changes';
-                return Promise.resolve([emptyItem]);
+                return Promise.resolve([...items, emptyItem]);
             }
 
             const revertButton = new TreeItem('Revert All Changes', vscode.TreeItemCollapsibleState.None);
@@ -78,6 +79,35 @@ export class DiffTreeDataProvider implements vscode.TreeDataProvider<TreeItem>, 
         }
 
         return Promise.resolve(items);
+    }
+
+    private createRecordingItem(): TreeItem {
+        const state = this.diffTracker.getBaselineState();
+
+        if (state === 'idle') {
+            const item = new TreeItem('Start Recording', vscode.TreeItemCollapsibleState.None);
+            item.command = {
+                command: 'diffTracker.startRecording',
+                title: 'Start Recording'
+            };
+            item.iconPath = new vscode.ThemeIcon('record');
+            item.tooltip = 'Start tracking file changes';
+            return item;
+        }
+
+        const item = new TreeItem('Recording', vscode.TreeItemCollapsibleState.None);
+        item.command = {
+            command: 'diffTracker.stopRecording',
+            title: 'Stop Recording'
+        };
+        item.iconPath = state === 'building'
+            ? new vscode.ThemeIcon('sync~spin')
+            : new vscode.ThemeIcon('circle-filled');
+        item.description = state === 'building' ? 'Starting...' : 'On';
+        item.tooltip = state === 'building'
+            ? 'Recording started. Baseline is initializing...'
+            : 'Recording is active. Click to stop recording.';
+        return item;
     }
 
     private createFileItem(fileDiff: FileDiff): TreeItem {

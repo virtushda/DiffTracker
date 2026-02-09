@@ -932,6 +932,13 @@ export class DiffTracker {
         return this.isRecording;
     }
 
+    public getBaselineState(): 'idle' | 'building' | 'ready' {
+        if (!this.isRecording) {
+            return 'idle';
+        }
+        return this.baselineBuilding ? 'building' : 'ready';
+    }
+
     public getTrackedChanges(): FileDiff[] {
         if (this.trackedChangesCacheVersion !== this.trackedChangesVersion) {
             this.trackedChangesCache = Array.from(this.trackedChanges.values())
