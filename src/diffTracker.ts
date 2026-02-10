@@ -107,7 +107,7 @@ export class DiffTracker {
                     e.affectsConfiguration('search.exclude') ||
                     e.affectsConfiguration('files.exclude')
                 ) {
-                    if (this.isRecording && this.externalWatcherEnabled) {
+                    if (this.isRecording) {
                         this.refreshIgnoreMatchers().catch(() => undefined);
                     }
                 }
@@ -729,11 +729,15 @@ export class DiffTracker {
         }
 
         const filePath = uri.fsPath;
+        const text = await this.readFileSnapshot(uri);
+        if (text === null) {
+            this.fileSnapshots.delete(filePath);
+            return;
+        }
         if (!this.fileSnapshots.has(filePath)) {
             this.fileSnapshots.set(filePath, '');
         }
-
-        await this.readFileAndUpdate(filePath, uri);
+        this.updateTrackedDiff(filePath, text);
     }
 
     private async onExternalFileDeleted(uri: vscode.Uri): Promise<void> {
@@ -759,13 +763,18 @@ export class DiffTracker {
     }
 
     private async readFileAndUpdate(filePath: string, uri: vscode.Uri): Promise<void> {
-        try {
-            const content = await vscode.workspace.fs.readFile(uri);
-            const text = new TextDecoder('utf-8').decode(content);
+        const text = await this.readFileSnapshot(uri);
+        if (text !== null) {
             this.updateTrackedDiff(filePath, text);
-        } catch {
-            // If the file no longer exists, treat as deleted
-            this.updateTrackedDiff(filePath, '');
+        } else {
+            const hadTracked = this.trackedChanges.has(filePath);
+            this.deleteTrackedChange(filePath);
+            this.lineChanges.delete(filePath);
+            this.markLineChangesUpdated(filePath);
+            this.inlineViews.delete(filePath);
+            if (hadTracked) {
+                this.emitTrackChangesEvent({ removedFiles: [filePath] });
+            }
         }
     }
 
