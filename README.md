@@ -160,7 +160,11 @@ You can toggle display/highlight settings in the sidebar **Settings** panel, and
 
 ### 0.5.1
 - Improve recording controls in Change Recording with inline start entry, starting status, and title start/stop actions
-  
+
+### 0.5.2
+- Fix watch ignore rules not refreshing in some recording states
+- Reuse snapshot filtering in watcher updates to avoid tracking binary/oversized files
+- Clear pre-seeded empty baseline for non-trackable created files in watcher flow
 
 ## License
 
