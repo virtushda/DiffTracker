@@ -2,13 +2,13 @@
   "name": "diff-tracker",
   "displayName": "Diff Tracker",
   "description": "Visual file diff tracking - record and display changes in real-time",
-  "version": "0.5.2",
-  "publisher": "Wizyoung",
-  "author": "Wizyoung",
+  "version": "0.6.0",
+  "publisher": "TinyTigerPan",
+  "author": "TinyTigerPan (Fork from Wizyoung)",
   "icon": "resources/marketplace-icon.png",
   "repository": {
     "type": "git",
-    "url": "https://github.com/wizyoung/DiffTracker.git"
+    "url": "https://github.com/TinyTigerPan/DiffTracker.git"
   },
   "engines": {
     "vscode": "^1.80.0"
@@ -94,6 +94,11 @@
           ],
           "description": "Default open mode when clicking a changed file in Diff Tracker"
         },
+        "diffTracker.openWebviewBeside": {
+          "type": "boolean",
+          "default": false,
+          "description": "When opening Webview diff, place it in a side editor group instead of the current one"
+        },
         "diffTracker.watchExclude": {
           "type": "array",
           "default": [],
@@ -101,6 +106,17 @@
             "type": "string"
           },
           "description": "Additional ignore patterns for file watching (one pattern per entry, gitignore-style)"
+        },
+        "diffTracker.onlyTrackVSCodeChanges": {
+          "type": "boolean",
+          "default": false,
+          "deprecationMessage": "Deprecated. Use diffTracker.onlyTrackAutomatedChanges instead.",
+          "description": "Deprecated alias for automation-only tracking."
+        },
+        "diffTracker.onlyTrackAutomatedChanges": {
+          "type": "boolean",
+          "default": false,
+          "description": "Only track automated changes. Manual typing in VS Code is ignored; external tool edits and tagged agent/extension edits are still recorded."
         }
       }
     },

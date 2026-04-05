@@ -36,7 +36,7 @@ export class WebviewDiffPanel {
     private readonly extensionUri: vscode.Uri;
     private disposables: vscode.Disposable[] = [];
     private filePath: string = '';
-    private currentStyle: 'split' | 'unified' = 'unified';
+    private currentStyle: 'split' | 'unified' = 'split';
     private currentWrap: boolean = false;
     private currentExpandAll: boolean = false;
     private isInitialized: boolean = false;
@@ -95,9 +95,7 @@ export class WebviewDiffPanel {
         filePath: string,
         revealColumn?: vscode.ViewColumn
     ): WebviewDiffPanel {
-        const column = revealColumn ?? (vscode.window.activeTextEditor
-            ? vscode.window.activeTextEditor.viewColumn
-            : undefined);
+        const column = revealColumn ?? WebviewDiffPanel.getDefaultRevealColumn();
 
         // If panel exists and showing the same file, reveal it
         if (WebviewDiffPanel.currentPanel && WebviewDiffPanel.currentPanel.filePath === filePath) {
@@ -116,7 +114,7 @@ export class WebviewDiffPanel {
         const panel = vscode.window.createWebviewPanel(
             'diffTrackerWebview',
             'Diff View',
-            revealColumn ?? vscode.ViewColumn.Beside,
+            column ?? vscode.ViewColumn.One,
             {
                 enableScripts: true,
                 retainContextWhenHidden: true,
@@ -131,6 +129,15 @@ export class WebviewDiffPanel {
         WebviewDiffPanel.currentPanel = new WebviewDiffPanel(panel, extensionUri, diffTracker);
         WebviewDiffPanel.currentPanel.update(filePath);
         return WebviewDiffPanel.currentPanel;
+    }
+
+    private static getDefaultRevealColumn(): vscode.ViewColumn {
+        const openBeside = vscode.workspace.getConfiguration('diffTracker').get<boolean>('openWebviewBeside', false);
+        if (openBeside) {
+            return vscode.ViewColumn.Beside;
+        }
+
+        return vscode.window.activeTextEditor?.viewColumn ?? vscode.ViewColumn.One;
     }
 
     public update(filePath: string): void {

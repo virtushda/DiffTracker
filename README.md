@@ -1,18 +1,19 @@
 # Diff Tracker
 
-[![VS Code Marketplace](https://img.shields.io/badge/VS%20Code%20Marketplace-Diff%20Tracker-007ACC?logo=visualstudiocode&logoColor=white)](https://marketplace.visualstudio.com/items?itemName=Wizyoung.diff-tracker)
-[![VS Code Marketplace Downloads](https://vsmarketplacebadges.dev/downloads-short/Wizyoung.diff-tracker.svg)](https://marketplace.visualstudio.com/items?itemName=Wizyoung.diff-tracker)
-[![Open VSX](https://img.shields.io/badge/Open%20VSX-Diff%20Tracker-5E60E7?logo=opensourceinitiative&logoColor=white)](https://open-vsx.org/extension/Wizyoung/diff-tracker)
-[![Open VSX Downloads](https://img.shields.io/open-vsx/dt/Wizyoung/diff-tracker?label=downloads)](https://open-vsx.org/extension/Wizyoung/diff-tracker)
+[中文说明](./README_CN.md)
+
 
 Diff Tracker is a VS Code extension that records file changes and provides three review modes:
 - Inline readonly diff document
 - VS Code side-by-side diff
 - Cursor-like WebView diff with floating Undo/Keep actions
 
+**Fork From [wizyoung/DiffTracker](https://github.com/wizyoung/DiffTracker)**
+
+
 ## Screenshots
 
-💥 **New in 0.4.0. Cursor like floating accept/reject buttons!**
+💥 **Highlights in 0.6.0: Auto-start recording, persistent review sessions, automation-only tracking, and more flexible WebView opening behavior.**
 
 | Cursor like WebView Unified | Cursor like WebView Split |
 |:---------------:|:--------------:|
@@ -28,7 +29,10 @@ Diff Tracker is a VS Code extension that records file changes and provides three
 
 
 ## Features
-
+- [New 🚀] Pending, unaccepted changes survive VS Code restarts and are restored from the saved baseline
+- [New 🚀] Automation-only tracking mode for AI/agent or extension-driven edits
+- [New 🚀] Configurable WebView opening position (`current group` or `beside`)
+- [New 🚀] Automatically start recording file changes after the extension is activated
 - Activity Bar **Change Recording** tree with file grouping
 - Recording mode (start/stop) with workspace baseline snapshot
 - Workspace-wide file watching (including external file changes)
@@ -43,7 +47,7 @@ Diff Tracker is a VS Code extension that records file changes and provides three
 ## Usage
 
 1. Open **Diff Tracker** from the Activity Bar.
-2. Click **Start Recording**.
+2. Recording starts automatically after the extension activates.
 3. Edit files in your workspace.
 4. In **Change Recording**, click a changed file to open inline diff.
 5. Use context menu or editor title buttons to open:
@@ -60,7 +64,8 @@ When recording starts, Diff Tracker:
 1. Captures baseline snapshots for workspace files (batched)
 2. Tracks file/document changes and rebuilds line/block diffs
 3. Serves virtual inline/original documents
-4. Keeps tree, decorations, CodeLens, and WebView in sync
+4. Restores pending changes after restart until they are accepted/reverted or the baseline is cleared
+5. Keeps tree, decorations, CodeLens, and WebView in sync
 
 ## Installation
 
@@ -92,9 +97,33 @@ This extension provides the following settings:
 | `diffTracker.highlightAddedLines` | `true` | Highlight added lines with green background |
 | `diffTracker.highlightModifiedLines` | `true` | Highlight modified lines with blue background |
 | `diffTracker.highlightWordChanges` | `true` | Highlight word-level changes within modified lines |
+| `diffTracker.openWebviewBeside` | `false` | Open Webview diff in a side editor group instead of the current editor group |
 | `diffTracker.watchExclude` | `[]` | Additional watch ignore patterns (`.gitignore` style) |
+| `diffTracker.onlyTrackAutomatedChanges` | `false` | Ignore manual typing in VS Code. External CLI/tool edits are still tracked, and VS Code extension edits can be tracked when they open an automation session first |
 
 You can toggle display/highlight settings in the sidebar **Settings** panel, and edit watch ignore patterns via **Edit Watch Ignores**.
+
+When `diffTracker.openWebviewBeside` is enabled, Webview diff opens in a side editor group. By default it opens in the current editor group.
+
+When `diffTracker.onlyTrackAutomatedChanges` is enabled:
+- Manual typing in the editor is ignored
+- External tools/CLI that modify files on disk are still tracked through file watchers
+- VS Code extensions should call `diffTracker.beginAutomationSession` before applying edits, and `diffTracker.endAutomationSession` after they finish
+
+Example integration from another VS Code extension:
+
+```ts
+const sessionId = await vscode.commands.executeCommand<string>(
+  'diffTracker.beginAutomationSession',
+  { allFiles: true, ttlMs: 30000 }
+);
+
+try {
+  // apply WorkspaceEdit or editor edits here
+} finally {
+  await vscode.commands.executeCommand('diffTracker.endAutomationSession', sessionId);
+}
+```
 
 ## Known Issues
 
@@ -167,6 +196,12 @@ You can toggle display/highlight settings in the sidebar **Settings** panel, and
 - Fix watch ignore rules not refreshing in some recording states
 - Reuse snapshot filtering in watcher updates to avoid tracking binary/oversized files
 - Clear pre-seeded empty baseline for non-trackable created files in watcher flow
+
+### 0.6.0
+- Persist recording session state and workspace baselines so pending diffs can be restored after restarting VS Code
+- Add `diffTracker.onlyTrackAutomatedChanges` plus `diffTracker.beginAutomationSession` / `diffTracker.endAutomationSession` for automation-aware tracking workflows
+- Add `diffTracker.openWebviewBeside`, expose the new recording/display toggles in the settings tree, and make WebView diff open behavior more configurable
+- Start recording automatically after activation and restore decorations/tree state when a previous session is resumed
 
 ## License
 

@@ -69,6 +69,7 @@ export class SettingsTreeDataProvider implements vscode.TreeDataProvider<Setting
             id: 'display',
             label: 'Display',
             items: [
+                { key: 'openWebviewBeside', label: 'Beside View' },
                 { key: 'showDeletedLinesBadge', label: 'Deleted line badge' },
                 { key: 'showCodeLens', label: 'CodeLens actions' }
             ]
@@ -80,6 +81,13 @@ export class SettingsTreeDataProvider implements vscode.TreeDataProvider<Setting
                 { key: 'highlightAddedLines', label: 'Added lines' },
                 { key: 'highlightModifiedLines', label: 'Modified lines' },
                 { key: 'highlightWordChanges', label: 'Word changes' }
+            ]
+        },
+        {
+            id: 'recording',
+            label: 'Recording',
+            items: [
+                { key: 'onlyTrackAutomatedChanges', label: 'Vibe Coding Only' }
             ]
         },
         {

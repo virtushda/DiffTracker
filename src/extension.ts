@@ -52,10 +52,11 @@ function getDefaultOpenMode(): DefaultOpenMode {
     return 'webview';
 }
 
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext) {
 
     // Initialize services
-    diffTracker = new DiffTracker();
+    diffTracker = new DiffTracker(context.storageUri);
+    const restoredSession = await diffTracker.restorePersistedState();
     decorationManager = new DecorationManager(diffTracker);
     statusBarManager = new StatusBarManager(diffTracker);
     originalContentProvider = new OriginalContentProvider(diffTracker);
@@ -155,6 +156,18 @@ export function activate(context: vscode.ExtensionContext) {
     context.subscriptions.push(
         vscode.commands.registerCommand('diffTracker.stopRecording', () => {
             stopRecordingFlow();
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('diffTracker.beginAutomationSession', (target?: unknown) => {
+            return diffTracker.beginAutomationSession(target);
+        })
+    );
+
+    context.subscriptions.push(
+        vscode.commands.registerCommand('diffTracker.endAutomationSession', (target?: unknown) => {
+            diffTracker.endAutomationSession(target);
         })
     );
 
@@ -575,6 +588,13 @@ export function activate(context: vscode.ExtensionContext) {
     );
 
     refreshChangesTree();
+    await vscode.commands.executeCommand('setContext', 'diffTracker.isRecording', diffTracker.getIsRecording());
+
+    if (restoredSession) {
+        updateVisibleDecorations();
+    } else {
+        startRecordingFlow();
+    }
 
     // Register disposables
     context.subscriptions.push(statusBarManager);
