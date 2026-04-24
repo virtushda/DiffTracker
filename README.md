@@ -69,18 +69,81 @@ When recording starts, Diff Tracker:
 
 ## Installation
 
-### From VSIX
-1. Download the .vsix file
-2. Open VS Code
-3. Open Extensions (Cmd+Shift+X)
-4. Click ... -> Install from VSIX...
-5. Select the downloaded .vsix
+### Build a `.vsix` package from source
 
-### Development
-1. Clone the repository
-2. Run npm install
-3. Run npm run compile
-4. Press F5 to launch the Extension Development Host
+Use these commands from the repository root:
+
+1. Install **Node.js 20+**.
+2. Clone the repository and open it in a terminal.
+3. Install dependencies:
+
+   ```bash
+   npm ci
+   ```
+
+4. Compile the extension:
+
+   ```bash
+   npm run compile
+   ```
+
+   This runs the TypeScript build and bundles the WebView assets into the `out/` and `webview/` folders.
+
+5. Create the VSIX package:
+
+   ```bash
+   npm run package
+   ```
+
+   This uses `vsce package` and automatically runs `npm run compile` again through the `vscode:prepublish` script, so your packaged extension is rebuilt before the `.vsix` file is created.
+
+6. After the command finishes, the VSIX file is written to the repository root. The filename matches the extension version in `package.json`, for example:
+
+   ```text
+   ./diff-tracker-0.6.0.vsix
+   ```
+
+#### Quick command summary
+
+```bash
+npm ci
+npm run compile
+npm run package
+```
+
+> Note: use `npm run compile`, not `npm compile`. The `run` keyword is required because `compile` is a custom script defined in `package.json`.
+
+#### Test before packaging (recommended)
+
+If you want to verify the extension before creating the VSIX:
+
+```bash
+npm run test:webview-anchors
+npm run test:similarity-pairing
+```
+
+#### Try the extension in development mode
+
+If you want to launch it without packaging first:
+
+1. Open the repository in VS Code.
+2. Run `npm ci`.
+3. Run `npm run compile`.
+4. Press `F5` to start an **Extension Development Host** window.
+
+### Install from VSIX
+1. Build or download the `.vsix` file.
+2. Open VS Code.
+3. Open Extensions (`Cmd+Shift+X` on macOS, `Ctrl+Shift+X` on Windows/Linux).
+4. Click `...` in the Extensions view.
+5. Choose **Install from VSIX...**
+6. Select the generated `.vsix` file.
+
+### Troubleshooting packaging
+
+- If `npm run package` fails because dependencies are missing, run `npm ci` first.
+- If you only want to rebuild the extension output without packaging, run `npm run compile`.
+- If you update the extension version in `package.json`, the generated VSIX filename changes to match that version.
 
 ## Requirements
 
