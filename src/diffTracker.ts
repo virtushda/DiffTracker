@@ -770,7 +770,7 @@ export class DiffTracker {
         return config.get<boolean>('useBuiltInExcludes', true);
     }
 
-    private shouldUseVsCodeExcludes(): boolean {
+    private shouldUseVSCodeExcludes(): boolean {
         const config = vscode.workspace.getConfiguration('diffTracker');
         return config.get<boolean>('useVSCodeExcludes', true);
     }
@@ -818,7 +818,7 @@ export class DiffTracker {
         const watchExcludes = this.getWatchExcludePatterns();
         const basePatterns = [
             ...(this.shouldUseBuiltInExcludes() ? this.getDefaultExcludePatterns() : []),
-            ...(this.shouldUseVsCodeExcludes() ? this.getVsCodeExcludePatterns() : []),
+            ...(this.shouldUseVSCodeExcludes() ? this.getVsCodeExcludePatterns() : []),
             ...watchExcludes
         ];
         ig.add(basePatterns);
