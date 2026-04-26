@@ -1375,7 +1375,7 @@ export class DiffTracker {
             '\n'
         );
         const changes = Diff.diffLines(normalizedOriginal, normalizedCurrent);
-        const fileName = filePath.split('/').pop() || filePath;
+        const fileName = path.basename(filePath);
         const isDeleted = originalContent.length > 0 && currentContent.length === 0;
 
         this.setTrackedChange(filePath, {

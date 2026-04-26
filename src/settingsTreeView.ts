@@ -70,6 +70,7 @@ export class SettingsTreeDataProvider implements vscode.TreeDataProvider<Setting
             label: 'Display',
             items: [
                 { key: 'openWebviewBeside', label: 'Beside View' },
+                { key: 'showFullFilePaths', label: 'Show Full File Paths' },
                 { key: 'showDeletedLinesBadge', label: 'Deleted line badge' },
                 { key: 'showCodeLens', label: 'CodeLens actions' }
             ]
@@ -97,6 +98,13 @@ export class SettingsTreeDataProvider implements vscode.TreeDataProvider<Setting
             label: 'Recording',
             items: [
                 { key: 'onlyTrackAutomatedChanges', label: 'Vibe Coding Only' }
+            ]
+        },
+        {
+            id: 'safety',
+            label: 'Safety',
+            items: [
+                { key: 'confirmReversions', label: 'Confirm reversions' }
             ]
         },
         {
