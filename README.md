@@ -13,7 +13,7 @@ Diff Tracker is a VS Code extension that records file changes and provides three
 
 ## Screenshots
 
-💥 **Highlights in 0.6.0: Auto-start recording, persistent review sessions, automation-only tracking, and more flexible WebView opening behavior.**
+💥 **Highlights in 0.6.3: Split VS Code exclude handling, full path display in the changes tree, and confirm-before-revert flows.**
 
 | Cursor like WebView Unified | Cursor like WebView Split |
 |:---------------:|:--------------:|
@@ -33,6 +33,10 @@ Diff Tracker is a VS Code extension that records file changes and provides three
 - [New 🚀] Automation-only tracking mode for AI/agent or extension-driven edits
 - [New 🚀] Configurable WebView opening position (`current group` or `beside`)
 - [New 🚀] Automatically start recording file changes after the extension is activated
+- [New 🚀] Show workspace-relative file paths in the Change Recording tree
+- [New 🚀] Confirm whole-file revert actions before they run
+- [New 🚀] Split VS Code exclude inheritance across `files.exclude`, `search.exclude`, and `files.watcherExclude`
+- [New 🚀] Workspace-relative glob matching for inherited VS Code excludes
 - Activity Bar **Change Recording** tree with file grouping
 - Recording mode (start/stop) with workspace baseline snapshot
 - Workspace-wide file watching (including external file changes)
@@ -98,17 +102,23 @@ This extension provides the following settings:
 | `diffTracker.highlightModifiedLines` | `true` | Highlight modified lines with blue background |
 | `diffTracker.highlightWordChanges` | `true` | Highlight word-level changes within modified lines |
 | `diffTracker.openWebviewBeside` | `false` | Open Webview diff in a side editor group instead of the current editor group |
+| `diffTracker.showFullFilePaths` | `false` | Show project-relative file paths in the Change Recording tree instead of only the file name |
+| `diffTracker.confirmReversions` | `true` | Show a confirmation dialog before reverting all changes or reverting all changes in a file |
 | `diffTracker.useGitIgnoreExcludes` | `true` | Apply ignore rules from `.gitignore` files and `.git/info/exclude` |
 | `diffTracker.useBuiltInExcludes` | `true` | Apply built-in ignore rules for common folders like `.git`, `node_modules`, `dist`, and `coverage` |
-| `diffTracker.useVSCodeFilesExcludes` | `true` | Apply VS Code Explorer exclude settings from `files.exclude` |
-| `diffTracker.useVSCodeSearchExcludes` | `false` | Apply VS Code search exclude settings from `search.exclude` |
-| `diffTracker.useVSCodeWatcherExcludes` | `false` | Apply VS Code watcher exclude settings from `files.watcherExclude` |
+| `diffTracker.useVSCodeExcludes` | `true` | Deprecated compatibility setting for VS Code exclude inheritance |
+| `diffTracker.useVSCodeFilesExcludes` | `true` | Apply VS Code Explorer exclude settings from `files.exclude`. Conditional object rules are ignored. |
+| `diffTracker.useVSCodeSearchExcludes` | `false` | Apply VS Code search exclude settings from `search.exclude`. Conditional object rules are ignored. |
+| `diffTracker.useVSCodeWatcherExcludes` | `false` | Apply VS Code watcher exclude settings from `files.watcherExclude`. Conditional object rules are ignored. |
 | `diffTracker.watchExclude` | `[]` | Additional watch ignore patterns (`.gitignore` style) |
+| `diffTracker.onlyTrackVSCodeChanges` | `false` | Deprecated alias for automation-only tracking |
 | `diffTracker.onlyTrackAutomatedChanges` | `false` | Ignore manual typing in VS Code. External CLI/tool edits are still tracked, and VS Code extension edits can be tracked when they open an automation session first |
 
 You can toggle display/highlight/ignore settings in the sidebar **Settings** panel, and edit watch ignore patterns via **Edit Watch Ignores**.
 
-VS Code exclude inheritance supports boolean glob rules. Conditional object rules such as `{ "when": "$(basename).ts" }` are ignored by Diff Tracker.
+VS Code exclude inheritance is split across `files.exclude`, `search.exclude`, and `files.watcherExclude`. Diff Tracker applies boolean glob rules from those settings and ignores conditional object rules such as `{ "when": "$(basename).ts" }`.
+
+`diffTracker.useVSCodeExcludes` remains as a deprecated compatibility setting.
 
 When `diffTracker.openWebviewBeside` is enabled, Webview diff opens in a side editor group. By default it opens in the current editor group.
 
@@ -209,6 +219,17 @@ try {
 - Add `diffTracker.onlyTrackAutomatedChanges` plus `diffTracker.beginAutomationSession` / `diffTracker.endAutomationSession` for automation-aware tracking workflows
 - Add `diffTracker.openWebviewBeside`, expose the new recording/display toggles in the settings tree, and make WebView diff open behavior more configurable
 - Start recording automatically after activation and restore decorations/tree state when a previous session is resumed
+
+### 0.6.2
+- Add `CompileToVSIX.bat` for packaging the extension
+- Add `diffTracker.showFullFilePaths` for project-relative file paths in the changes tree
+- Add `diffTracker.confirmReversions` to confirm whole-file revert actions
+- Handle cancelled revert confirmations cleanly in the webview
+
+### 0.6.3
+- Split VS Code exclude inheritance into separate settings for `files.exclude`, `search.exclude`, and `files.watcherExclude`
+- Add workspace-relative glob matching for inherited VS Code excludes
+- Update the settings UI and docs to reflect the new exclude settings and their conditional-rule limits
 
 ## License
 
