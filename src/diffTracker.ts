@@ -1513,6 +1513,39 @@ export class DiffTracker {
         return true;
     }
 
+    public async revertFiles(filePaths: string[]): Promise<number> {
+        const changes = filePaths
+            .map(filePath => this.trackedChanges.get(filePath))
+            .filter((change): change is FileDiff => change !== undefined);
+        if (changes.length === 0) {
+            return 0;
+        }
+
+        const removedFiles: string[] = [];
+        for (const change of changes) {
+            const restored = await this.restoreFileToContent(
+                change.filePath,
+                change.originalContent,
+                { deleteIfMissingInBaseline: !this.baselineExistingFiles.has(change.filePath) }
+            );
+            if (!restored) {
+                continue;
+            }
+
+            this.deleteTrackedChange(change.filePath);
+            this.lineChanges.delete(change.filePath);
+            this.markLineChangesUpdated(change.filePath);
+            this.inlineViews.delete(change.filePath);
+            removedFiles.push(change.filePath);
+        }
+
+        if (removedFiles.length > 0) {
+            this.emitTrackChangesEvent({ removedFiles });
+        }
+
+        return removedFiles.length;
+    }
+
     private async restoreFileToContent(
         filePath: string,
         content: string,
@@ -1801,6 +1834,40 @@ export class DiffTracker {
         });
         this.schedulePersistState();
         return true;
+    }
+
+    public async keepFiles(filePaths: string[]): Promise<number> {
+        const changes = filePaths
+            .map(filePath => this.trackedChanges.get(filePath))
+            .filter((change): change is FileDiff => change !== undefined);
+        if (changes.length === 0) {
+            return 0;
+        }
+
+        const removedFiles: string[] = [];
+        for (const change of changes) {
+            const doc = vscode.workspace.textDocuments.find(textDoc => textDoc.uri.fsPath === change.filePath);
+            const currentContent = doc?.getText() ?? change.currentContent;
+            this.fileSnapshots.set(change.filePath, currentContent);
+            if (change.isDeleted) {
+                this.baselineExistingFiles.delete(change.filePath);
+            } else {
+                this.baselineExistingFiles.add(change.filePath);
+            }
+
+            this.deleteTrackedChange(change.filePath);
+            this.lineChanges.delete(change.filePath);
+            this.markLineChangesUpdated(change.filePath);
+            this.inlineViews.delete(change.filePath);
+            removedFiles.push(change.filePath);
+        }
+
+        this.emitTrackChangesEvent({
+            removedFiles,
+            baselineChanged: true
+        });
+        this.schedulePersistState();
+        return removedFiles.length;
     }
 
     /**
